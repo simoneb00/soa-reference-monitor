@@ -1,5 +1,4 @@
-# soa-reference-monitor
-Kernel Level Reference Monitor for File Protection 
+# Kernel Level Reference Monitor for File Protection 
 
 This specification is related to a Linux Kernel Module (LKM) implementing a reference monitor for file protection. The reference monitor can be in one of the following four states:
 
