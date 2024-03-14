@@ -1,6 +1,7 @@
 all:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD)/syscall-table-discoverer modules
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD)/reference-monitor modules
+	gcc reference-monitor/user/user.c
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD)/syscall-table-discoverer clean
