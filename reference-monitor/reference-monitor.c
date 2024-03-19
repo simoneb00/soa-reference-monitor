@@ -46,6 +46,10 @@
 #include <linux/uaccess.h>
 #include <crypto/hash.h>
 #include <linux/spinlock.h>
+#include <linux/kprobes.h>
+#include <linux/namei.h>
+#include <linux/fs.h>
+#include <linux/list.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Simone Bauco");
@@ -57,10 +61,25 @@ MODULE_DESCRIPTION("Kernel Level Reference Monitor for File Protection");
 
 char *encrypt_password(const char *password);
 
-struct blacklist_path {
-        struct blacklist_path *next;
+
+struct open_flags {
+	int open_flag;
+	umode_t mode;
+	int acc_mode;
+	int intent;
+	int lookup_flags;
+};
+
+
+struct kprobe kp = {
+        .symbol_name = "do_filp_open",
+};
+
+
+struct blacklist_entry {
+        struct list_head list;
         char *path;
-} blacklist_path;
+};
 
 /** @struct reference_monitor
  *  @brief Reference Monitor Basic Structure
@@ -68,7 +87,7 @@ struct blacklist_path {
 struct reference_monitor {
         int state;                              /**< The state can be one of the following: OFF (0), ON (1), REC-OFF (2), REC-ON (3)*/
         char *password;                         /**< Password for Reference Monitor reconfiguration */
-        struct blacklist_path *blacklist;       /**< Paths to be protected */
+        struct list_head blacklist;      /**< Paths to be protected */
         spinlock_t lock;                        /**< Lock for synchronization */
 } reference_monitor;
 
@@ -83,6 +102,7 @@ module_param(the_syscall_table, ulong, 0660);
 
 unsigned long the_ni_syscall;
 
+unsigned long new_sys_call_array[] = {0x0, 0x0, 0x0, 0x0, 0x0};                 /* new syscalls addresses array */
 unsigned long new_sys_call_array[] = {0x0, 0x0, 0x0, 0x0, 0x0};                 /* new syscalls addresses array */
 #define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))  /* number of entries to be hacked */
 int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};                  /* array of free entries on the syscall table */
@@ -101,23 +121,22 @@ asmlinkage long sys_add_path_to_rf(char *path) {
                 return -EACCES;  // todo is EACCES correct?
         }
 
-        spin_lock_irq(&reference_monitor.lock);
+        struct blacklist_entry *new_entry;
 
-        struct blacklist_path *new_node = kmalloc(sizeof(struct blacklist_path), GFP_KERNEL); 
-        if (!new_node) {
-                printk(KERN_ERR "%s: error in allocating new node\n", MODNAME);
-                return -EAGAIN;
+        new_entry = kmalloc(sizeof(struct blacklist_entry), GFP_KERNEL);
+        if (!new_entry) {
+                return -ENOMEM;
         }
-        new_node->path = path;
-        new_node->next = NULL;
 
-        struct blacklist_path *current_node = reference_monitor.blacklist;
-        while (current_node->next != NULL) {
-                current_node = current_node->next;
+        new_entry->path = kstrdup(path, GFP_KERNEL);
+        if (!new_entry->path) {
+                kfree(new_entry);
+                return -ENOMEM;
         }
-        current_node->next = new_node;
 
-        spin_unlock_irq(&reference_monitor.lock);
+        spin_lock(&reference_monitor.lock);
+        list_add_tail(&new_entry->list, &reference_monitor.blacklist);
+        spin_unlock(&reference_monitor.lock);
 
         return 0;
 }
@@ -129,28 +148,18 @@ __SYSCALL_DEFINEx(1, _remove_path_from_rf, char *, path) {
 #else 
 asmlinkage long sys_remove_path_from_rf(char *path) {
 #endif
-        if (reference_monitor.state < 2) {
-                printk(KERN_ERR "%s: the reference monitor is not in a reconfiguration state\n", MODNAME);
-                return -EACCES;  // todo is EACCES correct?
-        }
 
-        spin_lock_irq(&reference_monitor.lock);
+        struct blacklist_entry *entry, *temp;
 
-        struct blacklist_path *current_node = reference_monitor.blacklist;
-        struct blacklist_path *prev_node = reference_monitor.blacklist;
-
-        while (current_node != NULL) {
-                if (!strcmp(current_node->path, path)) {
-                        prev_node->next = current_node->next;
-                        current_node = current_node->next;
-                        continue;
+        spin_lock(&reference_monitor.lock);
+        list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist, list) {
+                if (strcmp(entry->path, path) == 0) {
+                list_del(&entry->list);
+                kfree(entry->path);
+                kfree(entry);
                 }
-
-                prev_node = current_node;
-                current_node = current_node->next;
         }
-
-        spin_unlock_irq(&reference_monitor.lock);
+        spin_unlock(&reference_monitor.lock);
 
         return 0;
 }
@@ -162,15 +171,12 @@ __SYSCALL_DEFINEx(1, _print_black_list, int, none) {
 #else
 asmlinkage long sys_print_black_list(void) {
 #endif
-        spin_lock_irq(&reference_monitor.lock);
 
-        struct blacklist_path *current_node = reference_monitor.blacklist;
-        while (current_node != NULL) {
-                printk(KERN_INFO "%s: blacklist entry: %s\n", MODNAME, current_node->path);
-                current_node = current_node->next;
-        } 
-
-        spin_unlock_irq(&reference_monitor.lock);
+        struct blacklist_entry *entry;
+        printk(KERN_INFO "Blacklist contents:\n");
+        list_for_each_entry(entry, &reference_monitor.blacklist, list) {
+                printk(KERN_INFO "%s\n", entry->path);
+        }
 
         return 0;
 }
@@ -202,10 +208,18 @@ asmlinkage long sys_write_rf_state(int state) {
                 return -EINVAL;
         }
 
+
+        /* check state number */
+        if (state < 0 || state > 3) {
+                printk(KERN_ERR "%s: Unexpected state", MODNAME);
+                return -EINVAL;
+        }
+
         kuid_t euid = current_euid();
 
         /* check EUID */
         if (!uid_eq(euid, GLOBAL_ROOT_UID)) {
+                printk(KERN_ERR "%s: Access denied: only root (EUID 0) can change the state\n", MODNAME);
                 printk(KERN_ERR "%s: Access denied: only root (EUID 0) can change the state\n", MODNAME);
                 return -EPERM;
         }   
@@ -216,17 +230,31 @@ asmlinkage long sys_write_rf_state(int state) {
                         printk(KERN_ERR "%s: Access denied: invalid password\n", MODNAME);
                         return -EACCES;
                 } 
+        /* if requested state is REC-ON or REC-OFF, check password */
+        if (state > 1) {
+                if (strcmp(reference_monitor.password, encrypt_password(password)) != 0) {
+                        printk(KERN_ERR "%s: Access denied: invalid password\n", MODNAME);
+                        return -EACCES;
+                } 
         }
 
-        spin_lock_irq(&reference_monitor.lock);
+        spin_lock(&reference_monitor.lock);
 
         /* state update */
         printk("%s: password check successful, changing the state to %d\n", MODNAME, state);
         reference_monitor.state = state;
 
-        spin_unlock_irq(&reference_monitor.lock);
+        spin_unlock(&reference_monitor.lock);
 
+        /*
+        if (state == 1 || state == 3) {
+                enable_kprobe(&kp);     // the reference monitor has been turned on 
+        } else {
+                disable_kprobe(&kp);    // the reference monitor has been turned off 
+        }
+        */
         return reference_monitor.state;
+        
 }
 
 
@@ -236,8 +264,63 @@ long sys_write_state = (unsigned long) __x64_sys_write_rf_state;
 long sys_add_to_blacklist = (unsigned long) __x64_sys_add_path_to_rf;
 long sys_remove_from_blacklist = (unsigned long) __x64_sys_remove_path_from_rf;
 long sys_print_blacklist = (unsigned long) __x64_sys_print_black_list;
+long sys_add_to_blacklist = (unsigned long) __x64_sys_add_path_to_rf;
+long sys_remove_from_blacklist = (unsigned long) __x64_sys_remove_path_from_rf;
+long sys_print_blacklist = (unsigned long) __x64_sys_print_black_list;
 #else
 #endif
+
+
+/* REFERENCE MONITOR
+ * The following functions implement the core functionalities of the reference monitor. 
+*/
+
+int handler(struct kprobe *p, struct pt_regs *regs) {
+        
+
+        // we need the second and third arguments, which are stored in registers rsi and rdx
+        struct filename *fn = (struct filename *)regs->si;
+        struct open_flags *flags = (struct open_flags *)regs->dx;
+
+        int flag = flags->open_flag; 
+        const char *path = fn->name;
+
+        int blacklisted = 0;
+        struct blacklist_entry *entry;
+        list_for_each_entry(entry, &reference_monitor.blacklist, list) {
+                if (!strcmp(path, entry->path)) {
+                        blacklisted = 1;
+                        break;
+                }
+        }
+
+        if (blacklisted && (flag & O_RDWR || flag & O_WRONLY)) {
+                printk("%s: pre-handler execution, path is %s, access denied\n", MODNAME, path);
+        }
+
+        return 0;
+}
+
+int init_kprobes(void) {
+        int ret;
+	kp.pre_handler = handler;
+
+	ret = register_kprobe(&kp);
+	if (ret < 0) {
+		pr_err("%s: register_kprobe failed, returned %d\n", MODNAME, ret);
+		return ret;
+	}
+	pr_info("%s: Planted kprobe at %p\n", MODNAME, kp.addr);
+
+	return 0;
+}
+
+
+
+/* INITIALIZATION FUNCTIONS 
+ * the following functions are used in the module's initialization phase,
+ * in order to initialize the syscalls and encrypt the reference monitor password.
+*/
 
 
 /**
@@ -259,6 +342,9 @@ int initialize_syscalls(void) {
 
 	new_sys_call_array[0] = (unsigned long)sys_read_state; 
         new_sys_call_array[1] = (unsigned long)sys_write_state;
+        new_sys_call_array[2] = (unsigned long)sys_add_to_blacklist;
+        new_sys_call_array[3] = (unsigned long)sys_remove_from_blacklist;
+        new_sys_call_array[4] = (unsigned long)sys_print_blacklist;
         new_sys_call_array[2] = (unsigned long)sys_add_to_blacklist;
         new_sys_call_array[3] = (unsigned long)sys_remove_from_blacklist;
         new_sys_call_array[4] = (unsigned long)sys_print_blacklist;
@@ -364,22 +450,17 @@ int init_module(void) {
         printk("%s: setting initial state to OFF (0)\n", MODNAME);
         reference_monitor.state = 0;
 
-        struct blacklist_path *head = kmalloc(sizeof(struct blacklist_path), GFP_KERNEL);
-        if (!head) {
-                printk(KERN_ERR "%s: error in allocating blacklist head\n", MODNAME);
-                return -ENOMEM;
-        }
-        head->next = NULL;
-        head->path = "HEAD";
-        reference_monitor.blacklist = head;
-
-        /* SPINLOCK INITIALIZATION */
+        INIT_LIST_HEAD(&reference_monitor.blacklist);
+        
         DEFINE_SPINLOCK(lock);
         reference_monitor.lock = lock;
 
         /* PASSWORD SETUP */
         char *enc_password = encrypt_password(password); 
         reference_monitor.password = enc_password;
+
+        /* KPROBES INITIALIZATION */
+        init_kprobes();
 
         return 0;
 
@@ -398,5 +479,9 @@ void cleanup_module(void) {
         }
 	protect_memory();
         printk("%s: sys-call table restored to its original content\n",MODNAME);
+
+        /* kprobes unregistration */
+        unregister_kprobe(&kp);
+	pr_info("kprobe at %p unregistered\n", kp.addr);
         
 }
