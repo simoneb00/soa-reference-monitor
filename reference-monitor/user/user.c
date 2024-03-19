@@ -19,29 +19,13 @@
 void read_state() {
     int ret = syscall(READ_CODE);
     printf("Syscall returned %d\n", ret);
-    int ret = syscall(READ_CODE);
-    printf("Syscall returned %d\n", ret);
 }
 
 void write_state() {
     int new_state;
     char password[256];
-    int new_state;
-    char password[256];
 
-    printf("Enter the new state: ");
-    fflush(stdout); 
-    scanf("%d", &new_state);
 
-    if (new_state > 1) {
-        struct termios term;
-        tcflag_t old_flags;
-        
-        // Disabilita l'echo dell'input
-        tcgetattr(STDIN_FILENO, &term);
-        old_flags = term.c_lflag;
-        term.c_lflag &= ~(ECHO);
-        tcsetattr(STDIN_FILENO, TCSANOW, &term);
     printf("Enter the new state: ");
     fflush(stdout); 
     scanf("%d", &new_state);
@@ -66,43 +50,13 @@ void write_state() {
 
         printf("\n");
     }
-        printf("Enter the password: ");
-        fflush(stdout); 
-        scanf("%s", password);
 
-        // Ripristina i vecchi flag di termios
-        term.c_lflag = old_flags;
-        tcsetattr(STDIN_FILENO, TCSANOW, &term);
-
-        printf("\n");
-    }
-
-    int ret = syscall(WRITE_CODE, new_state, password);
-    printf("Syscall returned %d\n", ret);
     int ret = syscall(WRITE_CODE, new_state, password);
     printf("Syscall returned %d\n", ret);
 
     if (ret == -EPERM) {
         printf("Access denied: only root (EUID 0) can change the state\n");
     }
-    if (ret == -EPERM) {
-        printf("Access denied: only root (EUID 0) can change the state\n");
-    }
-}
-
-void print_blacklist(void) {
-    int ret = syscall(PRINT_BLACKLIST);
-    printf("Syscall print_blacklist returned %d\n", ret);
-}
-
-void add_to_blacklist(char *path) {
-    int ret = syscall(ADD_TO_BLACKLIST, path);
-    printf("Syscall add_to_blacklist returned %d\n", ret);
-}
-
-void remove_from_blacklist(char *path) {
-    int ret = syscall(RM_FROM_BLACKLIST, path);
-    printf("Syscall remove_from_blacklist returned %d\n", ret);
 }
 
 void print_blacklist(void) {
@@ -127,25 +81,9 @@ int main(int argc, char** argv){
     add_to_blacklist("test.txt");
     add_to_blacklist("/test.txt");
     print_blacklist();
-    remove_from_blacklist("test.txt");
+    remove_from_blacklist("/test.txt");
     print_blacklist();
-/*
-    read_state();
-    write_state();
-    read_state();
-    print_blacklist();
-    add_to_blacklist("/test/prova/1");
-    add_to_blacklist("/test/prova/2");
-    add_to_blacklist("/test/prova/3");
-    add_to_blacklist("/test/prova/4");
-    add_to_blacklist("/test/prova/5");
-    add_to_blacklist("/test/prova/6");
-    add_to_blacklist("/test/prova/7");
-    add_to_blacklist("/test/prova/8");
-    print_blacklist();
-    remove_from_blacklist("/test/prova/9");
-    print_blacklist();
-*/
+
     int ret = open("test.txt", O_RDWR);
     if (ret == -1) {
         perror("Error in opening file");

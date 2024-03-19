@@ -103,7 +103,6 @@ module_param(the_syscall_table, ulong, 0660);
 unsigned long the_ni_syscall;
 
 unsigned long new_sys_call_array[] = {0x0, 0x0, 0x0, 0x0, 0x0};                 /* new syscalls addresses array */
-unsigned long new_sys_call_array[] = {0x0, 0x0, 0x0, 0x0, 0x0};                 /* new syscalls addresses array */
 #define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))  /* number of entries to be hacked */
 int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};                  /* array of free entries on the syscall table */
 
@@ -229,13 +228,7 @@ asmlinkage long sys_write_rf_state(int state) {
                 if (strcmp(reference_monitor.password, encrypt_password(password)) != 0) {
                         printk(KERN_ERR "%s: Access denied: invalid password\n", MODNAME);
                         return -EACCES;
-                } 
-        /* if requested state is REC-ON or REC-OFF, check password */
-        if (state > 1) {
-                if (strcmp(reference_monitor.password, encrypt_password(password)) != 0) {
-                        printk(KERN_ERR "%s: Access denied: invalid password\n", MODNAME);
-                        return -EACCES;
-                } 
+                }
         }
 
         spin_lock(&reference_monitor.lock);
@@ -261,9 +254,6 @@ asmlinkage long sys_write_rf_state(int state) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 long sys_read_state = (unsigned long) __x64_sys_read_rf_state;   
 long sys_write_state = (unsigned long) __x64_sys_write_rf_state;    
-long sys_add_to_blacklist = (unsigned long) __x64_sys_add_path_to_rf;
-long sys_remove_from_blacklist = (unsigned long) __x64_sys_remove_path_from_rf;
-long sys_print_blacklist = (unsigned long) __x64_sys_print_black_list;
 long sys_add_to_blacklist = (unsigned long) __x64_sys_add_path_to_rf;
 long sys_remove_from_blacklist = (unsigned long) __x64_sys_remove_path_from_rf;
 long sys_print_blacklist = (unsigned long) __x64_sys_print_black_list;
