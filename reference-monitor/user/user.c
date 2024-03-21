@@ -87,12 +87,11 @@ int main(int argc, char** argv){
     int ret = open("test.txt", O_RDWR);
     if (ret == -1) {
         perror("Error in opening file");
-        return 1;
+    } else {
+        printf("File successfully opened\n");
     }
-
-    printf("File aperto con successo con i seguenti flag: %d\n", O_RDWR);
+    
     close(ret);
 
-    return 0;
     return 0;
 }

@@ -70,11 +70,12 @@ struct open_flags {
 	int lookup_flags;
 };
 
-
+/*
 struct kprobe kp = {
         .symbol_name = "do_filp_open",
-};
+};*/
 
+static struct kretprobe retprobe;
 
 struct blacklist_entry {
         struct list_head list;
@@ -239,14 +240,14 @@ asmlinkage long sys_write_rf_state(int state) {
 
         spin_unlock(&reference_monitor.lock);
 
-        
+        /*
         if (state == 1 || state == 3) {
                 enable_kprobe(&kp);     // the reference monitor has been turned on 
                 printk(KERN_INFO "%s: kprobe enabled\n", MODNAME);
         } else {
                 disable_kprobe(&kp);    // the reference monitor has been turned off
                 printk(KERN_INFO "%s: kprobe disabled\n", MODNAME); 
-        }
+        }*/
         
         return reference_monitor.state;
         
@@ -266,7 +267,7 @@ long sys_print_blacklist = (unsigned long) __x64_sys_print_black_list;
 /* REFERENCE MONITOR
  * The following functions implement the core functionalities of the reference monitor. 
 */
-
+/*
 int handler(struct kprobe *p, struct pt_regs *regs) {
         
 
@@ -291,8 +292,44 @@ int handler(struct kprobe *p, struct pt_regs *regs) {
         }
 
         return 0;
+}*/
+
+static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+        
+        /* get path and open flags from the registers snapshot */
+        struct filename *fn = (struct filename *)regs->si;
+        struct open_flags *flags = (struct open_flags *)regs->dx;
+
+        int flag = flags->open_flag; 
+        const char *path = fn->name;
+
+        /* check if this path belongs to the blacklist */
+        int blacklisted = 0;
+        struct blacklist_entry *entry;
+        list_for_each_entry(entry, &reference_monitor.blacklist, list) {
+                if (!strcmp(path, entry->path)) {
+                        blacklisted = 1;
+                        break;
+                }
+        }
+
+        /* if the path belongs to the blacklist, and the opening mode contains the write mode, schedule the return handler */
+        if (blacklisted && (flag & O_RDWR || flag & O_WRONLY)) {
+                return 0;       /* schedule return handler execution */
+        }
+
+        return 1;       /* the path is not blacklisted or it is opened in read mode, so the return handler will not be executed */
 }
 
+static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+        
+        pr_info("%s: Access denied\n", MODNAME);
+        regs->ax = -1;
+
+        return 0;
+}
+
+/*
 int init_kprobes(void) {
         int ret;
 	kp.pre_handler = handler;
@@ -305,6 +342,25 @@ int init_kprobes(void) {
 	}
 	pr_info("%s: Planted kprobe at %p\n", MODNAME, kp.addr);
 
+	return 0;
+}*/
+
+static int kretprobe_init(void)
+{
+        int ret;
+
+        retprobe.kp.symbol_name = "do_filp_open";
+	retprobe.handler = (kretprobe_handler_t)ret_handler;
+        retprobe.entry_handler = (kretprobe_handler_t)entry_handler;
+	retprobe.maxactive = -1;
+
+	ret = register_kretprobe(&retprobe);
+	if (ret < 0) {
+		printk("%s: kretprobe init failed, returned %d\n", MODNAME, ret);
+		return ret;
+	}
+	printk("%s: kretprobe correctly installed\n", MODNAME);
+	
 	return 0;
 }
 
@@ -453,7 +509,7 @@ int init_module(void) {
         reference_monitor.password = enc_password;
 
         /* KPROBES INITIALIZATION */
-        init_kprobes();
+        kretprobe_init();
 
         return 0;
 
@@ -473,8 +529,16 @@ void cleanup_module(void) {
 	protect_memory();
         printk("%s: sys-call table restored to its original content\n",MODNAME);
 
-        /* kprobes unregistration */
+        /* kprobes unregistration 
         unregister_kprobe(&kp);
-	pr_info("kprobe at %p unregistered\n", kp.addr);
+	pr_info("kprobe at %p unregistered\n", kp.addr);*/
+
+        unregister_kretprobe(&retprobe);
+	printk(KERN_INFO "kretprobe at %p unregistered\n",
+			retprobe.kp.addr);
+
+	/* nmissed > 0 suggests that maxactive was set too low. */
+	printk(KERN_INFO "Missed probing %d instances of %s\n",
+		retprobe.nmissed, retprobe.kp.symbol_name);
         
 }

@@ -9,7 +9,7 @@ clean:
 
 mount: 
 	insmod syscall-table-discoverer/the_usctm.ko
-	insmod reference-monitor/the_reference-monitor.ko the_syscall_table=$$(cat /sys/module/the_usctm/parameters/sys_call_table_address) password="ref_monitor_password"
+	insmod reference-monitor/the_reference-monitor.ko the_syscall_table=$$(cat /sys/module/the_usctm/parameters/sys_call_table_address) password="p"
 
 unmount:
 	rmmod the_usctm
