@@ -77,12 +77,12 @@ void remove_from_blacklist(char *path) {
 int main(int argc, char** argv){
 
     write_state();
-    print_blacklist();
-    add_to_blacklist("test.txt");
+/*    print_blacklist();*/
+    add_to_blacklist("test.txt");/*
     add_to_blacklist("/test.txt");
     print_blacklist();
     remove_from_blacklist("/test.txt");
-    print_blacklist();
+    print_blacklist(); */
 
     int ret = open("test.txt", O_RDWR);
     if (ret == -1) {

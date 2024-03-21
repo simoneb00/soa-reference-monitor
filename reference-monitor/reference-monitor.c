@@ -239,13 +239,15 @@ asmlinkage long sys_write_rf_state(int state) {
 
         spin_unlock(&reference_monitor.lock);
 
-        /*
+        
         if (state == 1 || state == 3) {
                 enable_kprobe(&kp);     // the reference monitor has been turned on 
+                printk(KERN_INFO "%s: kprobe enabled\n", MODNAME);
         } else {
-                disable_kprobe(&kp);    // the reference monitor has been turned off 
+                disable_kprobe(&kp);    // the reference monitor has been turned off
+                printk(KERN_INFO "%s: kprobe disabled\n", MODNAME); 
         }
-        */
+        
         return reference_monitor.state;
         
 }
@@ -294,6 +296,7 @@ int handler(struct kprobe *p, struct pt_regs *regs) {
 int init_kprobes(void) {
         int ret;
 	kp.pre_handler = handler;
+        kp.flags = KPROBE_FLAG_DISABLED;
 
 	ret = register_kprobe(&kp);
 	if (ret < 0) {
