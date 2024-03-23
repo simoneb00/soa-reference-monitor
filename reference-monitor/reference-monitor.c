@@ -50,6 +50,10 @@
 #include <linux/namei.h>
 #include <linux/fs.h>
 #include <linux/list.h>
+#include <linux/file.h>
+#include <linux/limits.h>
+#include <linux/uaccess.h>
+#include <linux/string.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Simone Bauco");
@@ -58,6 +62,12 @@ MODULE_DESCRIPTION("Kernel Level Reference Monitor for File Protection");
 #define MODNAME "REFERENCE MONITOR"
 #define PASSW_LEN 32
 #define AUDIT if(1)
+#define NUM_KRETPROBES 2
+
+/* FUNCTIONS TO BE PROBED 
+*       int do_unlinkat(int dfd, struct filename *name)
+*       
+*/
 
 char *encrypt_password(const char *password);
 
@@ -70,16 +80,13 @@ struct open_flags {
 	int lookup_flags;
 };
 
-/*
-struct kprobe kp = {
-        .symbol_name = "do_filp_open",
-};*/
-
-static struct kretprobe retprobe;
+static struct kretprobe do_filp_open_retprobe;
+static struct kretprobe do_unlink_at_retprobe;
 
 struct blacklist_entry {
         struct list_head list;
         char *path;
+        char *filename;
 };
 
 /** @struct reference_monitor
@@ -108,17 +115,66 @@ unsigned long new_sys_call_array[] = {0x0, 0x0, 0x0, 0x0, 0x0};                 
 int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};                  /* array of free entries on the syscall table */
 
 
+/* UTILS */
+
+char *get_full_path(char *rel_path) {
+
+        pr_info("Finding full path for %s\n", rel_path);
+
+        char *k_full_path = NULL;
+        struct path path;
+        int ret;
+
+        k_full_path = kmalloc(PATH_MAX, GFP_KERNEL);
+        if (!k_full_path) {
+                pr_err("%s: error in kmalloc (get_full_path)\n", MODNAME);
+                return NULL; 
+        }
+
+        ret = kern_path(rel_path, LOOKUP_FOLLOW, &path);
+        if (ret == -ENOENT) {
+                ret = kern_path(strcat(rel_path, "~"), LOOKUP_FOLLOW, &path);
+        }
+        if (ret) {
+                pr_err("%s: full path not found (error %d)\n", MODNAME, ret);
+                return NULL;
+        }
+
+        ret = snprintf(k_full_path, PATH_MAX, "%s", d_path(&path, k_full_path, PATH_MAX));
+        if (ret < 0 || ret >= PATH_MAX) {
+                kfree(k_full_path);
+                pr_err("%s: full path is too long\n", MODNAME);
+        }
+
+        // Rimuovi la tilde finale, se presente
+        char *tilde_pos = strrchr(k_full_path, '~');
+        if (tilde_pos != NULL) {
+                *tilde_pos = '\0';  // Sovrascrive la tilde con il terminatore di stringa
+        }
+
+        pr_info("%s: full path is %s\n", MODNAME, k_full_path);
+
+        return k_full_path;
+}
+
+
 /* NEW SYSCALLS DEFINITION */
 
 /* add path to reference monitor syscall */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(1, _add_path_to_rf, char *, path) {
+__SYSCALL_DEFINEx(1, _add_path_to_rf, char *, rel_path) {
 #else 
-asmlinkage long sys_add_path_to_rf(char *path) {
+asmlinkage long sys_add_path_to_rf(char *rel_path) {
 #endif
         if (reference_monitor.state < 2) {
                 printk(KERN_ERR "%s: the reference monitor is not in a reconfiguration state\n", MODNAME);
                 return -EACCES;  // todo is EACCES correct?
+        }
+
+        char *path = get_full_path(rel_path);
+        if (path == NULL) {
+                pr_err("%s: error in getting full path\n", MODNAME);
+                return -ENOENT;
         }
 
         struct blacklist_entry *new_entry;
@@ -133,6 +189,13 @@ asmlinkage long sys_add_path_to_rf(char *path) {
                 kfree(new_entry);
                 return -ENOMEM;
         }
+
+        new_entry->filename = kstrdup(rel_path, GFP_KERNEL);
+        if (!new_entry->filename) {
+                kfree(new_entry);
+                return -ENOMEM;
+        }
+
 
         spin_lock(&reference_monitor.lock);
         list_add_tail(&new_entry->list, &reference_monitor.blacklist);
@@ -175,7 +238,7 @@ asmlinkage long sys_print_black_list(void) {
         struct blacklist_entry *entry;
         printk(KERN_INFO "Blacklist contents:\n");
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
-                printk(KERN_INFO "%s\n", entry->path);
+                printk(KERN_INFO "path = %s, filename = %s\n", entry->path, entry->filename);
         }
 
         return 0;
@@ -263,107 +326,114 @@ long sys_print_blacklist = (unsigned long) __x64_sys_print_black_list;
 #else
 #endif
 
+/* UTILS */
+
+int is_blacklisted(const char *path) {
+        struct blacklist_entry *entry;
+        list_for_each_entry(entry, &reference_monitor.blacklist, list) {
+                if (!strcmp(kbasename(path), entry->filename)) {
+
+                        char *full_path = get_full_path(path);
+                        if (full_path == NULL) {
+                                return 0;
+                        }
+
+                        if (!strcmp(full_path, entry->path)) {
+                                return 1;
+                        }
+                }
+        }
+
+        return 0;
+}
 
 /* REFERENCE MONITOR
  * The following functions implement the core functionalities of the reference monitor. 
 */
-/*
-int handler(struct kprobe *p, struct pt_regs *regs) {
-        
-
-        // we need the second and third arguments, which are stored in registers rsi and rdx
-        struct filename *fn = (struct filename *)regs->si;
-        struct open_flags *flags = (struct open_flags *)regs->dx;
-
-        int flag = flags->open_flag; 
-        const char *path = fn->name;
-
-        int blacklisted = 0;
-        struct blacklist_entry *entry;
-        list_for_each_entry(entry, &reference_monitor.blacklist, list) {
-                if (!strcmp(path, entry->path)) {
-                        blacklisted = 1;
-                        break;
-                }
-        }
-
-        if (blacklisted && (flag & O_RDWR || flag & O_WRONLY)) {
-                printk("%s: pre-handler execution, path is %s, access denied\n", MODNAME, path);
-        }
-
-        return 0;
-}*/
-
-static int entry_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
-        
-        /* get path and open flags from the registers snapshot */
-        struct filename *fn = (struct filename *)regs->si;
-        struct open_flags *flags = (struct open_flags *)regs->dx;
-
-        int flag = flags->open_flag; 
-        const char *path = fn->name;
-
-        /* check if this path belongs to the blacklist */
-        int blacklisted = 0;
-        struct blacklist_entry *entry;
-        list_for_each_entry(entry, &reference_monitor.blacklist, list) {
-                if (!strcmp(path, entry->path)) {
-                        blacklisted = 1;
-                        break;
-                }
-        }
-
-        /* if the path belongs to the blacklist, and the opening mode contains the write mode, schedule the return handler */
-        if (blacklisted && (flag & O_RDWR || flag & O_WRONLY)) {
-                return 0;       /* schedule return handler execution */
-        }
-
-        return 1;       /* the path is not blacklisted or it is opened in read mode, so the return handler will not be executed */
-}
 
 static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
         
         pr_info("%s: Access denied\n", MODNAME);
-        regs->ax = -1;
+        regs->ax = -EACCES;
 
         return 0;
 }
 
-/*
-int init_kprobes(void) {
-        int ret;
-	kp.pre_handler = handler;
-        kp.flags = KPROBE_FLAG_DISABLED;
 
-	ret = register_kprobe(&kp);
-	if (ret < 0) {
-		pr_err("%s: register_kprobe failed, returned %d\n", MODNAME, ret);
-		return ret;
-	}
-	pr_info("%s: Planted kprobe at %p\n", MODNAME, kp.addr);
+static int do_unlink_at_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
-	return 0;
-}*/
+        /* get path and open flags from the registers snapshot */
+        struct filename *fn = (struct filename *)regs->si;
+        const char *path = fn->name;
+
+        /* check if this path belongs to the blacklist */
+        if (is_blacklisted(path)) {
+                pr_info("%s: Scheduling ret handler for path %s\n", MODNAME, path);
+                regs->di = -1;
+                return 0;
+        } 
+
+        return 1;
+}
+
+
+static int do_filp_open_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+
+        /* get path and open flags from the registers snapshot */
+        struct filename *fn = (struct filename *)regs->si;
+        const char *path = fn->name;
+
+        struct open_flags *flags = (struct open_flags *)regs->dx;
+        int flag = flags->open_flag; 
+
+        if (flag & O_RDWR || flag & O_WRONLY) {
+
+                /* check if this path belongs to the blacklist */
+                int blacklisted = is_blacklisted(path);
+
+                /* if the path belongs to the blacklist, and the opening mode contains the write mode, schedule the return handler */
+                if (blacklisted) {
+                        return 0;       /* schedule return handler execution */
+                }
+        }
+        return 1;       /* the path is not blacklisted or it is opened in read mode, so the return handler will not be executed */
+   
+}
 
 static int kretprobe_init(void)
 {
         int ret;
 
-        retprobe.kp.symbol_name = "do_filp_open";
-	retprobe.handler = (kretprobe_handler_t)ret_handler;
-        retprobe.entry_handler = (kretprobe_handler_t)entry_handler;
-	retprobe.maxactive = -1;
+        do_filp_open_retprobe.kp.symbol_name = "do_filp_open";
+	do_filp_open_retprobe.handler = (kretprobe_handler_t)ret_handler;
+        do_filp_open_retprobe.entry_handler = (kretprobe_handler_t)do_filp_open_handler;
+	do_filp_open_retprobe.maxactive = -1;
 
-	ret = register_kretprobe(&retprobe);
+        do_unlink_at_retprobe.kp.symbol_name = "do_unlinkat";
+	do_unlink_at_retprobe.handler = (kretprobe_handler_t)ret_handler;
+        do_unlink_at_retprobe.entry_handler = (kretprobe_handler_t)do_unlink_at_handler;
+	do_unlink_at_retprobe.maxactive = -1;
+
+        struct kretprobe **rps = kmalloc(NUM_KRETPROBES*sizeof(struct kretprobe *), GFP_KERNEL);
+        if (rps == NULL) {
+                pr_err("%s: kmalloc allocation of rps failed\n", MODNAME);
+                return -ENOMEM;
+        }
+        
+
+        rps[0] = &do_filp_open_retprobe;
+        rps[1] = &do_unlink_at_retprobe;
+
+	ret = register_kretprobes(rps, NUM_KRETPROBES);
 	if (ret < 0) {
-		printk("%s: kretprobe init failed, returned %d\n", MODNAME, ret);
+		printk("%s: kretprobes registration failed, returned %d\n", MODNAME, ret);
 		return ret;
 	}
-	printk("%s: kretprobe correctly installed\n", MODNAME);
+	printk("%s: kretprobes correctly installed\n", MODNAME);
+
 	
 	return 0;
 }
-
 
 
 /* INITIALIZATION FUNCTIONS 
@@ -529,16 +599,21 @@ void cleanup_module(void) {
 	protect_memory();
         printk("%s: sys-call table restored to its original content\n",MODNAME);
 
-        /* kprobes unregistration 
-        unregister_kprobe(&kp);
-	pr_info("kprobe at %p unregistered\n", kp.addr);*/
-
-        unregister_kretprobe(&retprobe);
-	printk(KERN_INFO "kretprobe at %p unregistered\n",
-			retprobe.kp.addr);
+        /* kretprobes unregistration*/
+        unregister_kretprobe(&do_filp_open_retprobe);
+	printk(KERN_INFO "do_filp_open_kretprobe at %p unregistered\n",
+			do_filp_open_retprobe.kp.addr);
 
 	/* nmissed > 0 suggests that maxactive was set too low. */
 	printk(KERN_INFO "Missed probing %d instances of %s\n",
-		retprobe.nmissed, retprobe.kp.symbol_name);
+		do_filp_open_retprobe.nmissed, do_filp_open_retprobe.kp.symbol_name);
+
+        unregister_kretprobe(&do_unlink_at_retprobe);
+	printk(KERN_INFO "do_unlink_at_kretprobe at %p unregistered\n",
+			do_unlink_at_retprobe.kp.addr);
+
+	/* nmissed > 0 suggests that maxactive was set too low. */
+	printk(KERN_INFO "Missed probing %d instances of %s\n",
+		do_unlink_at_retprobe.nmissed, do_unlink_at_retprobe.kp.symbol_name);
         
 }

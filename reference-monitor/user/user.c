@@ -16,6 +16,8 @@
 #define RM_FROM_BLACKLIST 177
 #define PRINT_BLACKLIST 178
 
+#define print_error(s) {printf("\033[1;31m%s\033[0m\n", s);} 
+
 void read_state() {
     int ret = syscall(READ_CODE);
     printf("Syscall returned %d\n", ret);
@@ -66,7 +68,18 @@ void print_blacklist(void) {
 
 void add_to_blacklist(char *path) {
     int ret = syscall(ADD_TO_BLACKLIST, path);
-    printf("Syscall add_to_blacklist returned %d\n", ret);
+    if (ret != 0) {
+        switch (errno)
+        {
+        case ENOMEM:
+            print_error("Error in adding file to blacklist");
+            break;
+        
+        case ENOENT:
+            print_error("File not found. Either the file does not exist or you're not in the directory containing the file.");
+            break;
+        }
+    }
 }
 
 void remove_from_blacklist(char *path) {
@@ -78,13 +91,14 @@ int main(int argc, char** argv){
 
     write_state();
 /*    print_blacklist();*/
-    add_to_blacklist("test.txt");/*
+    add_to_blacklist("prova.txt");
+    print_blacklist();/*
     add_to_blacklist("/test.txt");
     print_blacklist();
     remove_from_blacklist("/test.txt");
     print_blacklist(); */
 
-    int ret = open("test.txt", O_RDWR);
+    int ret = open("prova.txt", O_RDWR);
     if (ret == -1) {
         perror("Error in opening file");
     } else {
