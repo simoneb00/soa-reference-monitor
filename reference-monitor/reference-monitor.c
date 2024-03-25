@@ -62,11 +62,15 @@ MODULE_DESCRIPTION("Kernel Level Reference Monitor for File Protection");
 #define MODNAME "REFERENCE MONITOR"
 #define PASSW_LEN 32
 #define AUDIT if(1)
-#define NUM_KRETPROBES 2
+#define NUM_KRETPROBES 5
+
+/* the first 6 arguments in rdi, rsi, rdx, rcx, r8, r9 */
 
 /* FUNCTIONS TO BE PROBED 
 *       int do_unlinkat(int dfd, struct filename *name)
-*       
+*       int do_renameat2(int olddfd, struct filename *from, int newdfd, struct filename *to, unsigned int flags)
+*       int do_linkat(int olddfd, struct filename *old, int newdfd, struct filename *new, int flags)
+*       int do_symlinkat(struct filename *from, int newdfd, struct filename *to)
 */
 
 char *encrypt_password(const char *password);
@@ -81,7 +85,10 @@ struct open_flags {
 };
 
 static struct kretprobe do_filp_open_retprobe;
-static struct kretprobe do_unlink_at_retprobe;
+static struct kretprobe do_unlinkat_retprobe;
+static struct kretprobe do_renameat2_retprobe;
+static struct kretprobe do_symlinkat_retprobe;
+static struct kretprobe do_linkat_retprobe;
 
 struct blacklist_entry {
         struct list_head list;
@@ -360,7 +367,7 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 }
 
 
-static int do_unlink_at_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+static int do_unlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         /* get path and open flags from the registers snapshot */
         struct filename *fn = (struct filename *)regs->si;
@@ -400,19 +407,65 @@ static int do_filp_open_handler(struct kretprobe_instance *ri, struct pt_regs *r
    
 }
 
+static int do_renameat2_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+
+        struct filename *from = (struct filename *)regs->si;
+        const char *path = from->name;
+
+        if (is_blacklisted(path)) {
+                regs->di = -1;
+                pr_info("%s: Detected try to move the blacklisted file %s\n", MODNAME, path);
+                return 0;
+        }
+
+        return 1;
+}
+
+static int do_linkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+        struct filename *old = (struct filename *)regs->si;
+        const char *path = old->name;
+
+        if (is_blacklisted(path)) {
+                regs->di = -1;
+                pr_info("%s: Detected try to create a hard link for a blacklisted file %s\n", MODNAME, path);
+                return 0;
+        }
+
+        return 1;
+}
+
+static int do_symlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+        struct filename *from = (struct filename *)regs->di;
+        const char *path = from->name;
+
+        if (is_blacklisted(path)) {
+                regs->si = -1;
+                pr_info("%s: Detected try to create a symbolic link for a blacklisted file %s\n", MODNAME, path);
+                return 0;
+        }
+
+        return 1;
+}
+
+
+/* UTILS */
+static void set_kretprobe(struct kretprobe *krp, char *symbol_name, kretprobe_handler_t entry_handler) {
+        krp->kp.symbol_name = symbol_name;
+        krp->handler = (kretprobe_handler_t)ret_handler;
+        krp->entry_handler = entry_handler;
+        krp->maxactive = -1;
+}
+
+
 static int kretprobe_init(void)
 {
         int ret;
 
-        do_filp_open_retprobe.kp.symbol_name = "do_filp_open";
-	do_filp_open_retprobe.handler = (kretprobe_handler_t)ret_handler;
-        do_filp_open_retprobe.entry_handler = (kretprobe_handler_t)do_filp_open_handler;
-	do_filp_open_retprobe.maxactive = -1;
-
-        do_unlink_at_retprobe.kp.symbol_name = "do_unlinkat";
-	do_unlink_at_retprobe.handler = (kretprobe_handler_t)ret_handler;
-        do_unlink_at_retprobe.entry_handler = (kretprobe_handler_t)do_unlink_at_handler;
-	do_unlink_at_retprobe.maxactive = -1;
+        set_kretprobe(&do_filp_open_retprobe, "do_filp_open", (kretprobe_handler_t)do_filp_open_handler);
+        set_kretprobe(&do_unlinkat_retprobe, "do_unlinkat", (kretprobe_handler_t)do_unlinkat_handler);
+        set_kretprobe(&do_renameat2_retprobe, "do_renameat2", (kretprobe_handler_t)do_renameat2_handler);
+        set_kretprobe(&do_linkat_retprobe, "do_linkat", (kretprobe_handler_t)do_linkat_handler);
+        set_kretprobe(&do_symlinkat_retprobe, "do_symlinkat", (kretprobe_handler_t)do_symlinkat_handler);
 
         struct kretprobe **rps = kmalloc(NUM_KRETPROBES*sizeof(struct kretprobe *), GFP_KERNEL);
         if (rps == NULL) {
@@ -422,7 +475,10 @@ static int kretprobe_init(void)
         
 
         rps[0] = &do_filp_open_retprobe;
-        rps[1] = &do_unlink_at_retprobe;
+        rps[1] = &do_unlinkat_retprobe;
+        rps[2] = &do_renameat2_retprobe;
+        rps[3] = &do_linkat_retprobe;
+        rps[4] = &do_symlinkat_retprobe;
 
 	ret = register_kretprobes(rps, NUM_KRETPROBES);
 	if (ret < 0) {
@@ -431,7 +487,6 @@ static int kretprobe_init(void)
 	}
 	printk("%s: kretprobes correctly installed\n", MODNAME);
 
-	
 	return 0;
 }
 
@@ -585,6 +640,16 @@ int init_module(void) {
 
 }
 
+/* UTILS */
+void unregister_krp(struct kretprobe krp) {
+
+        unregister_kretprobe(&krp);
+
+	/* nmissed > 0 suggests that maxactive was set too low. */
+	printk(KERN_INFO "Missed probing %d instances of %s\n", krp.nmissed, krp.kp.symbol_name);
+}
+
+
 void cleanup_module(void) {
 
         int i;
@@ -600,20 +665,11 @@ void cleanup_module(void) {
         printk("%s: sys-call table restored to its original content\n",MODNAME);
 
         /* kretprobes unregistration*/
-        unregister_kretprobe(&do_filp_open_retprobe);
-	printk(KERN_INFO "do_filp_open_kretprobe at %p unregistered\n",
-			do_filp_open_retprobe.kp.addr);
 
-	/* nmissed > 0 suggests that maxactive was set too low. */
-	printk(KERN_INFO "Missed probing %d instances of %s\n",
-		do_filp_open_retprobe.nmissed, do_filp_open_retprobe.kp.symbol_name);
-
-        unregister_kretprobe(&do_unlink_at_retprobe);
-	printk(KERN_INFO "do_unlink_at_kretprobe at %p unregistered\n",
-			do_unlink_at_retprobe.kp.addr);
-
-	/* nmissed > 0 suggests that maxactive was set too low. */
-	printk(KERN_INFO "Missed probing %d instances of %s\n",
-		do_unlink_at_retprobe.nmissed, do_unlink_at_retprobe.kp.symbol_name);
+        unregister_krp(do_filp_open_retprobe);
+        unregister_krp(do_unlinkat_retprobe);
+        unregister_krp(do_renameat2_retprobe);
+        unregister_krp(do_linkat_retprobe);
+        unregister_krp(do_symlinkat_retprobe);
         
 }
