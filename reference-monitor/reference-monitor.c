@@ -74,7 +74,7 @@ MODULE_DESCRIPTION("Kernel Level Reference Monitor for File Protection");
 *       int do_renameat2(int olddfd, struct filename *from, int newdfd, struct filename *to, unsigned int flags)
 *       int do_linkat(int olddfd, struct filename *old, int newdfd, struct filename *new, int flags)
 *       int do_symlinkat(struct filename *from, int newdfd, struct filename *to)
-*       int do_mkdirat(int dfd, struct filename *name, umode_t mode)
+*       int security_inode_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
 */
 
 char *encrypt_password(const char *password);
@@ -94,7 +94,7 @@ static struct kretprobe do_unlinkat_retprobe;
 static struct kretprobe do_renameat2_retprobe;
 static struct kretprobe do_symlinkat_retprobe;
 static struct kretprobe do_linkat_retprobe;
-static struct kretprobe do_mkdirat_retprobe;
+static struct kretprobe security_inode_mkdir_retprobe;
 
 struct kretprobe **rps; /* kretprobes array */
 
@@ -698,34 +698,6 @@ static int do_filp_open_handler(struct kretprobe_instance *ri, struct pt_regs *r
         struct open_flags *flags = (struct open_flags *)regs->dx;
         int flag = flags->open_flag; 
 
-        if (flag & O_CREAT) {
-                
-                char *full_path;
-
-                if (path[0] != '/') {
-                        full_path = get_current_working_directory(path);
-                        pr_info("%s, path = %s\n", full_path, path);
-                } else {
-                        full_path = path;
-                }
-
-                
-                if (is_blacklisted_dir(full_path)) {
-                        pr_info("%s: tried to create a file in protected directory %s\n", MODNAME, full_path);
-                        const struct open_flags of = {
-                                .open_flag = 0,
-                                .mode = (umode_t)0,
-                                .acc_mode = 0,
-                                .intent = 0,
-                                .lookup_flags = 0
-                        };
-                        
-                        regs->dx = (unsigned long)&of;
-                        return 0;
-                }
-        
-        }
-
         if (flag & O_RDWR || flag & O_WRONLY) {
 
                 /* if the path belongs to the blacklist, schedule the return handler */
@@ -738,29 +710,24 @@ static int do_filp_open_handler(struct kretprobe_instance *ri, struct pt_regs *r
    
 }
 
-static int do_mkdirat_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+static int security_inode_mkdir_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
-        /* get path and open flags from the registers snapshot */
-        struct filename *fn = (struct filename *)regs->si;
-        char *path = fn->name;
+        struct dentry *dentry = (struct dentry *)regs->si;
 
-        char *full_path;
+        char *buffer, *full_path;
 
-        if (path[0] != '/') {
-                full_path = get_current_working_directory(path);
-                pr_info("%s, path = %s\n", full_path, path);
-        } else {
-                full_path = path;
-        }
+        buffer = (char *)__get_free_page(GFP_KERNEL);
+        if (!buffer)
+                return 1;
 
-        
-        if (is_blacklisted_dir(full_path)) {
-                pr_info("%s: tried to create a directory in protected directory %s\n", MODNAME, full_path);
-                regs->si = 0777;
-                return 0;
-        }
+        full_path = dentry_path_raw(dentry, buffer, PATH_MAX);
+        if (IS_ERR(full_path)) {
+                pr_err("dentry_path_raw failed: %li", PTR_ERR(full_path));
+        } 
 
-        return 1;
+        free_page((unsigned long)buffer);
+
+        return !is_blacklisted_dir(full_path);
         
 }
 
@@ -833,7 +800,7 @@ static int kretprobe_init(void)
         set_kretprobe(&do_renameat2_retprobe, "do_renameat2", (kretprobe_handler_t)do_renameat2_handler);
         set_kretprobe(&do_linkat_retprobe, "do_linkat", (kretprobe_handler_t)do_linkat_handler);
         set_kretprobe(&do_symlinkat_retprobe, "do_symlinkat", (kretprobe_handler_t)do_symlinkat_handler);
-        set_kretprobe(&do_mkdirat_retprobe, "do_mkdirat", (kretprobe_handler_t)do_mkdirat_handler);
+        set_kretprobe(&security_inode_mkdir_retprobe, "security_inode_mkdir", (kretprobe_handler_t)security_inode_mkdir_handler);
 
         rps = kmalloc(NUM_KRETPROBES*sizeof(struct kretprobe *), GFP_KERNEL);
         if (rps == NULL) {
@@ -847,7 +814,7 @@ static int kretprobe_init(void)
         rps[2] = &do_renameat2_retprobe;
         rps[3] = &do_linkat_retprobe;
         rps[4] = &do_symlinkat_retprobe;
-        rps[5] = &do_mkdirat_retprobe;
+        rps[5] = &security_inode_mkdir_retprobe;
 
 	ret = register_kretprobes(rps, NUM_KRETPROBES);
 	if (ret < 0) {
