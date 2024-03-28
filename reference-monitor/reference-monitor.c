@@ -54,6 +54,9 @@
 #include <linux/limits.h>
 #include <linux/uaccess.h>
 #include <linux/string.h>
+#include <linux/dcache.h>
+#include <linux/fs_struct.h>
+
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Simone Bauco");
@@ -62,7 +65,7 @@ MODULE_DESCRIPTION("Kernel Level Reference Monitor for File Protection");
 #define MODNAME "REFERENCE MONITOR"
 #define PASSW_LEN 32
 #define AUDIT if(1)
-#define NUM_KRETPROBES 5
+#define NUM_KRETPROBES 6
 
 /* the first 6 arguments in rdi, rsi, rdx, rcx, r8, r9 */
 
@@ -71,6 +74,7 @@ MODULE_DESCRIPTION("Kernel Level Reference Monitor for File Protection");
 *       int do_renameat2(int olddfd, struct filename *from, int newdfd, struct filename *to, unsigned int flags)
 *       int do_linkat(int olddfd, struct filename *old, int newdfd, struct filename *new, int flags)
 *       int do_symlinkat(struct filename *from, int newdfd, struct filename *to)
+*       int do_mkdirat(int dfd, struct filename *name, umode_t mode)
 */
 
 char *encrypt_password(const char *password);
@@ -84,16 +88,25 @@ struct open_flags {
 	int lookup_flags;
 };
 
+/* kretprobes structs */
 static struct kretprobe do_filp_open_retprobe;
 static struct kretprobe do_unlinkat_retprobe;
 static struct kretprobe do_renameat2_retprobe;
 static struct kretprobe do_symlinkat_retprobe;
 static struct kretprobe do_linkat_retprobe;
+static struct kretprobe do_mkdirat_retprobe;
+
+struct kretprobe **rps; /* kretprobes array */
 
 struct blacklist_entry {
         struct list_head list;
         char *path;
         char *filename;
+};
+
+struct blacklist_dir_entry {
+        struct list_head list;
+        char *path;
 };
 
 /** @struct reference_monitor
@@ -102,7 +115,8 @@ struct blacklist_entry {
 struct reference_monitor {
         int state;                              /**< The state can be one of the following: OFF (0), ON (1), REC-OFF (2), REC-ON (3)*/
         char *password;                         /**< Password for Reference Monitor reconfiguration */
-        struct list_head blacklist;      /**< Paths to be protected */
+        struct list_head blacklist;             /**< Files to be protected */
+        struct list_head blacklist_dir;         /**< Directories to be protected */
         spinlock_t lock;                        /**< Lock for synchronization */
 } reference_monitor;
 
@@ -117,7 +131,7 @@ module_param(the_syscall_table, ulong, 0660);
 
 unsigned long the_ni_syscall;
 
-unsigned long new_sys_call_array[] = {0x0, 0x0, 0x0, 0x0, 0x0};                 /* new syscalls addresses array */
+unsigned long new_sys_call_array[] = {0x0, 0x0, 0x0, 0x0, 0x0, 0x0};                 /* new syscalls addresses array */
 #define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))  /* number of entries to be hacked */
 int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};                  /* array of free entries on the syscall table */
 
@@ -126,7 +140,7 @@ int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};                  
 
 char *get_full_path(char *rel_path) {
 
-        pr_info("Finding full path for %s\n", rel_path);
+        pr_info("%s: finding full path for %s\n", MODNAME, rel_path);
 
         char *k_full_path = NULL;
         struct path path;
@@ -153,15 +167,164 @@ char *get_full_path(char *rel_path) {
                 pr_err("%s: full path is too long\n", MODNAME);
         }
 
-        // Rimuovi la tilde finale, se presente
         char *tilde_pos = strrchr(k_full_path, '~');
         if (tilde_pos != NULL) {
-                *tilde_pos = '\0';  // Sovrascrive la tilde con il terminatore di stringa
+                *tilde_pos = '\0'; 
         }
 
         pr_info("%s: full path is %s\n", MODNAME, k_full_path);
 
         return k_full_path;
+}
+
+
+/* SYSCALL UTILS */
+
+int is_directory(char *path) {
+        struct path p;
+        int error;
+        struct inode *inode;
+
+        error = kern_path(path, LOOKUP_FOLLOW, &p);
+        if(error) {
+                pr_err("%s: error in kern_path (is_directory)\n", MODNAME);
+        }
+        inode = p.dentry->d_inode;
+
+        return S_ISDIR(inode->i_mode);
+}
+
+int add_dir_to_rm(char *path) {
+        struct blacklist_dir_entry *new_entry;
+
+        new_entry = kmalloc(sizeof(struct blacklist_dir_entry), GFP_KERNEL);
+        if (!new_entry) {
+                pr_err("%s: error in kmalloc allocation (add_dir_to_rm)\n", MODNAME);
+                return -ENOMEM;
+        }
+
+        new_entry->path = kstrdup(path, GFP_KERNEL);
+        if (!new_entry->path) {
+                kfree(new_entry);
+                pr_err("%s: error in kstrdup (add_dir_to_rm)\n", MODNAME);
+                return -ENOMEM;
+        }
+
+        spin_lock(&reference_monitor.lock);
+        list_add_tail(&new_entry->list, &reference_monitor.blacklist_dir);
+        spin_unlock(&reference_monitor.lock);
+
+        return 0;
+}
+
+int add_file_to_rf(char *path, char *rel_path) {
+
+        struct blacklist_entry *new_entry;
+
+        new_entry = kmalloc(sizeof(struct blacklist_entry), GFP_KERNEL);
+        if (!new_entry) {
+                pr_err("%s: error in kmalloc allocation (add_file_to_rf)\n", MODNAME);
+                return -ENOMEM;
+        }
+
+        new_entry->path = kstrdup(path, GFP_KERNEL);
+        if (!new_entry->path) {
+                kfree(new_entry);
+                pr_err("%s: error in kstrdup (add_file_to_rf)\n", MODNAME);
+                return -ENOMEM;
+        }
+
+        new_entry->filename = kstrdup(kbasename(rel_path), GFP_KERNEL);
+        if (!new_entry->filename) {
+                kfree(new_entry);
+                pr_err("%s: error in kstrdup (add_file_to_rf)\n", MODNAME);
+                return -ENOMEM;
+        }
+
+
+        spin_lock(&reference_monitor.lock);
+        list_add_tail(&new_entry->list, &reference_monitor.blacklist);
+        spin_unlock(&reference_monitor.lock);
+
+        return 0;
+}
+
+struct custom_dir_context {
+    struct dir_context dir_ctx; 
+    char *dir_path; 
+};
+
+int add_directory_to_rf(struct file *dir, char *dir_name);
+
+static bool process_dir_entry(struct dir_context *dir, const char *name, int name_len,
+                        loff_t offset, u64 ino, unsigned int d_type) {
+
+        /* retrieve base dir path from struct custom_dir_context */
+        struct custom_dir_context *custom_ctx = container_of(dir, struct custom_dir_context, dir_ctx);
+        char *full_path = kmalloc(sizeof(char)*PATH_MAX, GFP_KERNEL);
+        if (!full_path) {
+                pr_err("%s: kmalloc allocation error (process_dir_entry)\n", MODNAME);
+                return false;
+        }
+        strcpy(full_path, custom_ctx->dir_path);
+
+        /* get file/subdirectory name */
+        char *file_name = kmalloc(name_len + 1, GFP_KERNEL);
+        if (!file_name) {
+                pr_err("%s: kmalloc allocation error (process_dir_entry)\n", MODNAME);
+                kfree(full_path);
+                return false;
+        }
+        strncpy(file_name, name, name_len);
+        file_name[name_len] = '\0'; 
+
+        /* exclude current and parent directories */
+        if (strcmp(file_name, ".") && strcmp(file_name, "..")) {
+
+                /* reconstruct file/subdirectory path */
+                strcat(full_path, "/");
+                strcat(full_path, file_name);
+
+
+                if (d_type == DT_DIR) {         /* subdirectory */
+                        
+                        struct file *subdir = filp_open(full_path, O_RDONLY, 0);
+                        
+                        if (IS_ERR(subdir)) {
+                                pr_err("%s: error in opening file %s\n", MODNAME, file_name);
+                                return PTR_ERR(subdir);
+                        }
+
+                        add_directory_to_rf(subdir, full_path);
+                        
+                } else {        /* file */
+
+                        add_file_to_rf(full_path, file_name);
+
+                }
+
+        }
+
+        kfree(full_path);
+        kfree(file_name);
+
+        return true;
+
+}
+
+
+int add_directory_to_rf(struct file *dir, char *dir_path) {
+
+        /* add directory path to blacklist */
+        add_dir_to_rm(dir_path);
+
+        struct custom_dir_context ctx = {
+                .dir_ctx = {.actor = &process_dir_entry},
+                .dir_path = dir_path
+        };
+        iterate_dir(dir, &ctx.dir_ctx);
+
+        return 0;
 }
 
 
@@ -184,29 +347,26 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
                 return -ENOENT;
         }
 
-        struct blacklist_entry *new_entry;
+        pr_info("%s: adding path %s\n", MODNAME, path);
 
-        new_entry = kmalloc(sizeof(struct blacklist_entry), GFP_KERNEL);
-        if (!new_entry) {
-                return -ENOMEM;
+        //#ifdef FILES_ONLY
+        if (is_directory(path)) {
+                struct file *dir = filp_open(path, O_RDONLY, 0);
+                if (IS_ERR(dir)) {
+                        pr_err("%s: error in opening file %s\n", MODNAME, path);
+                        return PTR_ERR(dir);
+                }
+
+                add_directory_to_rf(dir, path);
+
+                filp_close(dir, NULL);
+
+        } else {
+                add_file_to_rf(path, rel_path);
         }
-
-        new_entry->path = kstrdup(path, GFP_KERNEL);
-        if (!new_entry->path) {
-                kfree(new_entry);
-                return -ENOMEM;
-        }
-
-        new_entry->filename = kstrdup(rel_path, GFP_KERNEL);
-        if (!new_entry->filename) {
-                kfree(new_entry);
-                return -ENOMEM;
-        }
-
-
-        spin_lock(&reference_monitor.lock);
-        list_add_tail(&new_entry->list, &reference_monitor.blacklist);
-        spin_unlock(&reference_monitor.lock);
+        //#else
+        //add_file_to_rf(path, rel_path);
+        //#endif
 
         return 0;
 }
@@ -243,9 +403,15 @@ asmlinkage long sys_print_black_list(void) {
 #endif
 
         struct blacklist_entry *entry;
-        printk(KERN_INFO "Blacklist contents:\n");
+        printk(KERN_INFO "Blacklist contents (files):\n");
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
                 printk(KERN_INFO "path = %s, filename = %s\n", entry->path, entry->filename);
+        }
+
+        struct blacklist_dir_entry *dir_entry;
+        printk(KERN_INFO "Blacklist contents (directories):\n");
+        list_for_each_entry(dir_entry, &reference_monitor.blacklist_dir, list) {
+                printk(KERN_INFO "path = %s\n", dir_entry->path);
         }
 
         return 0;
@@ -335,24 +501,131 @@ long sys_print_blacklist = (unsigned long) __x64_sys_print_black_list;
 
 /* UTILS */
 
-int is_blacklisted(const char *path) {
+static char *get_dir_path_from_fd(int fd) {
+
+        struct file *file;
+        char *buffer, *path_name;
+        int ret;
+
+        file = fget(fd);
+        if (!file) {
+                printk(KERN_ERR "Failed to get file from file descriptor\n");
+                return NULL;
+        }
+
+        struct path p = file->f_path;
+        struct dentry *d = p.dentry;
+
+        buffer = (char *)__get_free_page(GFP_KERNEL);
+        if (!buffer)
+                return NULL;
+        path_name = dentry_path_raw(d, buffer, PAGE_SIZE);
+
+        if (IS_ERR(path_name))
+                printk(KERN_ERR "ERR");
+
+        if ((ret=kern_path(path_name, LOOKUP_FOLLOW, &p))) {
+                printk("kern_path returned %d for path_name \"%s\", inode %ld\n", ret, path_name, d->d_inode->i_ino);
+                return NULL;
+        }
+
+        free_page((unsigned long)buffer);
+
+        return strcat(path_name, "/");
+}
+
+static char *get_full_path_from_fd(int fd, char *filename) {
+
+        pr_info("%s: requested full path computation for file %s\n", MODNAME, filename);
+
+        /* get parent directory full path */
+        char *dir = get_dir_path_from_fd(fd);
+        if (!dir) {
+                pr_err("%s: failed to get dir path\n", MODNAME);
+                return NULL;
+        }
+
+        /* concatenate parent directory and filename */
+        char *full_path = strcat(dir, filename);
+
+        pr_info("%s: full path is %s\n", MODNAME, full_path);
+        return full_path;
+}
+
+
+/**
+ * Check if this file is blacklisted, retrieve full path from filename
+*/
+int is_blacklisted(char *filename) {
         struct blacklist_entry *entry;
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
-                if (!strcmp(kbasename(path), entry->filename)) {
 
-                        char *full_path = get_full_path(path);
+                if (!strcmp(kbasename(filename), entry->filename)) {
+                        char *full_path = get_full_path(filename);
                         if (full_path == NULL) {
+                                pr_err("%s: full path not found for filename %s\n", MODNAME, filename);
                                 return 0;
                         }
 
+                        /* check if file is blacklisted */
                         if (!strcmp(full_path, entry->path)) {
                                 return 1;
                         }
+
+                        /* check if file belongs to a blacklisted directory */
+                        //else if (strstr(full_path, entry->path) != NULL) {
+                        //        return 1;
+                        //}
+                }
+                
+        }
+
+        return 0;
+}
+
+
+/**
+ * Check if this file is blacklisted, retrieve full path from file descriptor
+*/
+int is_blacklisted_fd(char *path, int fd) {
+        struct blacklist_entry *entry;
+        list_for_each_entry(entry, &reference_monitor.blacklist, list) {
+
+                if (!strcmp(kbasename(path), entry->filename)) {
+
+                        char *full_path = get_full_path_from_fd(fd, path);
+                        if (full_path == NULL) {
+                                pr_err("%s: full path not found for filename %s\n", MODNAME, path);
+                                return 0;
+                        }
+                                
+                        /* check if file is blacklisted */    
+                        if (!strcmp(full_path, entry->path)) {
+                                return 1;
+                        }
+
+                        /* check if file belongs to a blacklisted directory */
+                        //else if (strstr(full_path, entry->path) != NULL) {
+                        //        return 1;
+                        //}
                 }
         }
 
         return 0;
 }
+
+int is_blacklisted_dir(char *path) {
+
+        struct blacklist_dir_entry *entry;
+        list_for_each_entry(entry, &reference_monitor.blacklist_dir, list) {
+                if (strstr(path, entry->path) != NULL) {
+                        return 1;
+                }
+        }
+
+        return 0;
+}
+
 
 /* REFERENCE MONITOR
  * The following functions implement the core functionalities of the reference monitor. 
@@ -371,16 +644,48 @@ static int do_unlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *re
 
         /* get path and open flags from the registers snapshot */
         struct filename *fn = (struct filename *)regs->si;
-        const char *path = fn->name;
+        char *filename = fn->name;
+
+        int dfd = (int)regs->di;
 
         /* check if this path belongs to the blacklist */
-        if (is_blacklisted(path)) {
-                pr_info("%s: Scheduling ret handler for path %s\n", MODNAME, path);
-                regs->di = -1;
-                return 0;
-        } 
+        if (dfd == AT_FDCWD) {
+                if (is_blacklisted(filename)) {
+                        regs->di = -1;
+                        return 0;
+                }
+        } else {
+                if (is_blacklisted_fd(filename, dfd)) {
+                        regs->di = -1;
+                        return 0;
+                }
+        }
 
         return 1;
+}
+
+char *get_current_working_directory(char *path) {
+        struct path abs_path;
+        char *buffer, *full_path;
+
+        buffer = (char *)__get_free_page(GFP_KERNEL);
+        if (!buffer)
+                return NULL;
+
+        get_fs_pwd(current->fs, &abs_path);
+
+        full_path = dentry_path_raw(abs_path.dentry, buffer, PATH_MAX);
+        if (IS_ERR(full_path)) {
+                pr_err("dentry_path_raw failed: %li", PTR_ERR(full_path));
+        } 
+
+        free_page((unsigned long)buffer);
+        path_put(&abs_path);
+
+        strcat(full_path, "/");
+        strcat(full_path, path);
+
+        return full_path;
 }
 
 
@@ -388,29 +693,81 @@ static int do_filp_open_handler(struct kretprobe_instance *ri, struct pt_regs *r
 
         /* get path and open flags from the registers snapshot */
         struct filename *fn = (struct filename *)regs->si;
-        const char *path = fn->name;
+        char *path = fn->name;
 
         struct open_flags *flags = (struct open_flags *)regs->dx;
         int flag = flags->open_flag; 
 
+        if (flag & O_CREAT) {
+                
+                char *full_path;
+
+                if (path[0] != '/') {
+                        full_path = get_current_working_directory(path);
+                        pr_info("%s, path = %s\n", full_path, path);
+                } else {
+                        full_path = path;
+                }
+
+                
+                if (is_blacklisted_dir(full_path)) {
+                        pr_info("%s: tried to create a file in protected directory %s\n", MODNAME, full_path);
+                        const struct open_flags of = {
+                                .open_flag = 0,
+                                .mode = (umode_t)0,
+                                .acc_mode = 0,
+                                .intent = 0,
+                                .lookup_flags = 0
+                        };
+                        
+                        regs->dx = (unsigned long)&of;
+                        return 0;
+                }
+        
+        }
+
         if (flag & O_RDWR || flag & O_WRONLY) {
 
-                /* check if this path belongs to the blacklist */
-                int blacklisted = is_blacklisted(path);
-
-                /* if the path belongs to the blacklist, and the opening mode contains the write mode, schedule the return handler */
-                if (blacklisted) {
+                /* if the path belongs to the blacklist, schedule the return handler */
+                if (is_blacklisted(path)) {
                         return 0;       /* schedule return handler execution */
                 }
         }
+
         return 1;       /* the path is not blacklisted or it is opened in read mode, so the return handler will not be executed */
    
+}
+
+static int do_mkdirat_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+
+        /* get path and open flags from the registers snapshot */
+        struct filename *fn = (struct filename *)regs->si;
+        char *path = fn->name;
+
+        char *full_path;
+
+        if (path[0] != '/') {
+                full_path = get_current_working_directory(path);
+                pr_info("%s, path = %s\n", full_path, path);
+        } else {
+                full_path = path;
+        }
+
+        
+        if (is_blacklisted_dir(full_path)) {
+                pr_info("%s: tried to create a directory in protected directory %s\n", MODNAME, full_path);
+                regs->si = 0777;
+                return 0;
+        }
+
+        return 1;
+        
 }
 
 static int do_renameat2_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         struct filename *from = (struct filename *)regs->si;
-        const char *path = from->name;
+        char *path = from->name;
 
         if (is_blacklisted(path)) {
                 regs->di = -1;
@@ -423,12 +780,22 @@ static int do_renameat2_handler(struct kretprobe_instance *ri, struct pt_regs *r
 
 static int do_linkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
         struct filename *old = (struct filename *)regs->si;
-        const char *path = old->name;
+        char *path = old->name;
 
-        if (is_blacklisted(path)) {
-                regs->di = -1;
-                pr_info("%s: Detected try to create a hard link for a blacklisted file %s\n", MODNAME, path);
-                return 0;
+        int dfd = (int)regs->di;
+
+        if (dfd == AT_FDCWD) {
+                if (is_blacklisted(path)) {
+                        regs->di = -1;
+                        pr_info("%s: Detected try to create a hard link for a blacklisted file %s\n", MODNAME, path);
+                        return 0;
+                } 
+        } else {
+                if (is_blacklisted_fd(path, dfd)) {
+                        regs->di = -1;
+                        pr_info("%s: Detected try to create a hard link for a blacklisted file %s\n", MODNAME, path);
+                        return 0;
+                } 
         }
 
         return 1;
@@ -436,7 +803,7 @@ static int do_linkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs
 
 static int do_symlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
         struct filename *from = (struct filename *)regs->di;
-        const char *path = from->name;
+        char *path = from->name;
 
         if (is_blacklisted(path)) {
                 regs->si = -1;
@@ -466,8 +833,9 @@ static int kretprobe_init(void)
         set_kretprobe(&do_renameat2_retprobe, "do_renameat2", (kretprobe_handler_t)do_renameat2_handler);
         set_kretprobe(&do_linkat_retprobe, "do_linkat", (kretprobe_handler_t)do_linkat_handler);
         set_kretprobe(&do_symlinkat_retprobe, "do_symlinkat", (kretprobe_handler_t)do_symlinkat_handler);
+        set_kretprobe(&do_mkdirat_retprobe, "do_mkdirat", (kretprobe_handler_t)do_mkdirat_handler);
 
-        struct kretprobe **rps = kmalloc(NUM_KRETPROBES*sizeof(struct kretprobe *), GFP_KERNEL);
+        rps = kmalloc(NUM_KRETPROBES*sizeof(struct kretprobe *), GFP_KERNEL);
         if (rps == NULL) {
                 pr_err("%s: kmalloc allocation of rps failed\n", MODNAME);
                 return -ENOMEM;
@@ -479,6 +847,7 @@ static int kretprobe_init(void)
         rps[2] = &do_renameat2_retprobe;
         rps[3] = &do_linkat_retprobe;
         rps[4] = &do_symlinkat_retprobe;
+        rps[5] = &do_mkdirat_retprobe;
 
 	ret = register_kretprobes(rps, NUM_KRETPROBES);
 	if (ret < 0) {
@@ -516,9 +885,6 @@ int initialize_syscalls(void) {
 
 	new_sys_call_array[0] = (unsigned long)sys_read_state; 
         new_sys_call_array[1] = (unsigned long)sys_write_state;
-        new_sys_call_array[2] = (unsigned long)sys_add_to_blacklist;
-        new_sys_call_array[3] = (unsigned long)sys_remove_from_blacklist;
-        new_sys_call_array[4] = (unsigned long)sys_print_blacklist;
         new_sys_call_array[2] = (unsigned long)sys_add_to_blacklist;
         new_sys_call_array[3] = (unsigned long)sys_remove_from_blacklist;
         new_sys_call_array[4] = (unsigned long)sys_print_blacklist;
@@ -625,6 +991,7 @@ int init_module(void) {
         reference_monitor.state = 0;
 
         INIT_LIST_HEAD(&reference_monitor.blacklist);
+        INIT_LIST_HEAD(&reference_monitor.blacklist_dir);
         
         DEFINE_SPINLOCK(lock);
         reference_monitor.lock = lock;
@@ -638,15 +1005,6 @@ int init_module(void) {
 
         return 0;
 
-}
-
-/* UTILS */
-void unregister_krp(struct kretprobe krp) {
-
-        unregister_kretprobe(&krp);
-
-	/* nmissed > 0 suggests that maxactive was set too low. */
-	printk(KERN_INFO "Missed probing %d instances of %s\n", krp.nmissed, krp.kp.symbol_name);
 }
 
 
@@ -665,11 +1023,9 @@ void cleanup_module(void) {
         printk("%s: sys-call table restored to its original content\n",MODNAME);
 
         /* kretprobes unregistration*/
-
-        unregister_krp(do_filp_open_retprobe);
-        unregister_krp(do_unlinkat_retprobe);
-        unregister_krp(do_renameat2_retprobe);
-        unregister_krp(do_linkat_retprobe);
-        unregister_krp(do_symlinkat_retprobe);
+        for (int i = 0; i < NUM_KRETPROBES; i++) {
+                printk(KERN_INFO "Missed probing %d instances of %s\n", rps[i]->nmissed, rps[i]->kp.symbol_name);
+        }
+        unregister_kretprobes(rps, NUM_KRETPROBES);
         
 }

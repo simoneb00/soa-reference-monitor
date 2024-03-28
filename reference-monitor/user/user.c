@@ -90,22 +90,21 @@ void remove_from_blacklist(char *path) {
 int main(int argc, char** argv){
 
     write_state();
-/*    print_blacklist();*/
-    add_to_blacklist("prova.txt");
-    print_blacklist();/*
-    add_to_blacklist("/test.txt");
+    add_to_blacklist("test.txt");
+    add_to_blacklist("test/test.txt");
+    add_to_blacklist("prova");
     print_blacklist();
-    remove_from_blacklist("/test.txt");
-    print_blacklist(); */
 
-    int ret = open("prova.txt", O_RDWR);
-    if (ret == -1) {
-        perror("Error in opening file");
-    } else {
-        printf("File successfully opened\n");
+/*
+    int ret = open("test.txt", O_RDWR);
+    if (ret < 0) {
+        perror("Open error: ");
+        return 1;
     }
-    
-    close(ret);
+
+    printf("Open returned %d\n", ret);
+    */
+
 
     return 0;
 }
