@@ -95,16 +95,5 @@ int main(int argc, char** argv){
     add_to_blacklist("prova");
     print_blacklist();
 
-/*
-    int ret = open("test.txt", O_RDWR);
-    if (ret < 0) {
-        perror("Open error: ");
-        return 1;
-    }
-
-    printf("Open returned %d\n", ret);
-    */
-
-
     return 0;
 }
