@@ -57,6 +57,7 @@
 #include <linux/dcache.h>
 #include <linux/fs_struct.h>
 #include <linux/path.h>
+#include <crypto/hash.h>
 
 
 MODULE_LICENSE("GPL");
@@ -169,6 +170,21 @@ int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};                  
 
 
 /* UTILS */
+
+char *get_path_from_dentry(struct dentry *dentry) {
+
+        char *buffer = (char *)__get_free_page(GFP_KERNEL);
+        if (!buffer)
+                return NULL;
+
+        char *full_path = dentry_path_raw(dentry, buffer, PATH_MAX);
+        if (IS_ERR(full_path)) {
+                pr_err("dentry_path_raw failed: %li", PTR_ERR(full_path));
+        } 
+        free_page((unsigned long)buffer);
+
+        return full_path;
+}
 
 char *get_full_path(char *rel_path) {
 
@@ -515,14 +531,18 @@ asmlinkage long sys_write_rf_state(int state) {
 
         spin_unlock(&reference_monitor.lock);
 
-        /*
+        /* enable/disable monitor */
         if (state == 1 || state == 3) {
-                enable_kprobe(&kp);     // the reference monitor has been turned on 
-                printk(KERN_INFO "%s: kprobe enabled\n", MODNAME);
+                for (int i = 0; i < NUM_KRETPROBES; i++) {
+                        enable_kretprobe(rps[i]);
+                }
+                pr_info("%s: kretprobes enabled\n", MODNAME);
         } else {
-                disable_kprobe(&kp);    // the reference monitor has been turned off
-                printk(KERN_INFO "%s: kprobe disabled\n", MODNAME); 
-        }*/
+                for (int i = 0; i < NUM_KRETPROBES; i++) {
+                        disable_kretprobe(rps[i]);
+                }
+                pr_info("%s: kretprobes disabled\n", MODNAME);
+        }
         
         return reference_monitor.state;
         
@@ -676,6 +696,103 @@ int is_blacklisted_hl(char *path, unsigned long inode_number) {
  * The following functions implement the core functionalities of the reference monitor. 
 */
 
+static char *calc_fingerprint(char *filename) {
+        struct crypto_shash *hash_tfm;
+        struct file *file;
+        struct shash_desc *desc;
+        unsigned char *digest;
+        char *result = NULL;
+        loff_t pos = 0;
+        int ret;
+
+        /* Allocazione del transform hash */
+        hash_tfm = crypto_alloc_shash("sha256", 0, 0);
+        if (IS_ERR(hash_tfm)) {
+                printk(KERN_ERR "Failed to allocate hash transform\n");
+                return NULL;
+        }
+
+        /* Apertura del file */
+        file = filp_open(filename, O_RDONLY, 0);
+        if (IS_ERR(file)) {
+                printk(KERN_ERR "Failed to open file %s\n", filename);
+                crypto_free_shash(hash_tfm);
+                return NULL;
+        }
+
+        /* Allocazione del descrittore hash */
+        desc = kmalloc(sizeof(struct shash_desc) + crypto_shash_descsize(hash_tfm), GFP_KERNEL);
+        if (!desc) {
+                printk(KERN_ERR "Failed to allocate hash descriptor\n");
+                goto out;
+        }
+        desc->tfm = hash_tfm;
+
+        /* Allocazione del buffer di digest */
+        digest = kmalloc(32, GFP_KERNEL);
+        if (!digest) {
+                printk(KERN_ERR "Failed to allocate hash buffer\n");
+                goto out;
+        }
+
+        /* Calcolo dell'hash del contenuto del file */
+        crypto_shash_init(desc);
+        while (1) {
+                char buf[PAGE_SIZE];
+                ret = kernel_read(file, buf, sizeof(buf), &pos);
+                if (ret <= 0)
+                break;
+                crypto_shash_update(desc, buf, ret);
+        }
+        crypto_shash_final(desc, digest);
+
+        /* Allocazione della stringa risultato */
+        result = kmalloc(2 * 32 + 1, GFP_KERNEL);
+        if (!result) {
+                printk(KERN_ERR "Failed to allocate memory for result\n");
+                goto out;
+        }
+
+        /* Formattazione dell'hash come stringa esadecimale */
+        for (int i = 0; i < 32; i++)
+                sprintf(&result[i * 2], "%02x", digest[i]);
+                
+out:
+        if (digest)
+                kfree(digest);
+        if (desc)
+                kfree(desc);
+        if (file)
+                filp_close(file, NULL);
+        if (hash_tfm)
+                crypto_free_shash(hash_tfm);
+
+        return result;
+}
+
+
+static void get_info(void) {
+
+        char *exe_path;
+
+        printk(KERN_INFO "Thread ID: %d\n", current->pid); // PID del thread corrente
+        printk(KERN_INFO "Thread Group ID: %d\n", task_tgid_vnr(current)); // TID del thread corrente
+        printk(KERN_INFO "User ID: %u\n", current_uid().val); // User ID corrente
+        printk(KERN_INFO "Effective User ID: %u\n", current_euid().val); // Effective User ID corrente
+
+        struct mm_struct *mm = current->mm;
+        if (mm && mm->exe_file) {
+                struct dentry *exe_dentry = mm->exe_file->f_path.dentry;
+                exe_path = get_path_from_dentry(exe_dentry);
+                printk(KERN_INFO "Percorso del file eseguibile: %s\n", exe_path);
+        } else {
+                printk(KERN_INFO "Percorso del file eseguibile non disponibile\n");
+        }
+
+        char *hash = calc_fingerprint(exe_path);
+        printk(KERN_INFO "Hash del file eseguibile: %s\n", hash);
+}
+
 static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         /* get message */
@@ -685,6 +802,8 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         /* return "Permission denied" error */
         regs->ax = -EACCES;
+
+        get_info();
 
         kfree(iop->message);
 
@@ -734,8 +853,6 @@ static int vfs_open_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
         struct invalid_operation_data *iop;
         char message[200];
 
-        char *buffer, *full_path;
-
         /* retrieve parameters */
         const struct path *path = (const struct path *)regs->di;
         struct file *file = (struct file *)regs->si;
@@ -746,16 +863,8 @@ static int vfs_open_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
         if ((mode & FMODE_WRITE) || (mode & FMODE_PWRITE)) {
 
                 /* retrieve path */
-                buffer = (char *)__get_free_page(GFP_KERNEL);
-                if (!buffer)
-                        return 1;
-
-                full_path = dentry_path_raw(dentry, buffer, PATH_MAX);
-                if (IS_ERR(full_path)) {
-                        pr_err("dentry_path_raw failed: %li", PTR_ERR(full_path));
-                } 
-                free_page((unsigned long)buffer);
-
+                char *full_path = get_path_from_dentry(dentry);
+                
                 /* retrieve inode number (hard link protection) */
                 struct inode *inode = dentry->d_inode;
                 unsigned long inode_number = inode->i_ino;

@@ -1,3 +1,5 @@
+#define GNU_SOURCE
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -89,11 +91,20 @@ void remove_from_blacklist(char *path) {
 
 int main(int argc, char** argv){
 
+    pid_t tid = gettid();
+    printf("TID = %d\n", tid);
+
     write_state();
     add_to_blacklist("test.txt");
     add_to_blacklist("test/test.txt");
     add_to_blacklist("prova");
     print_blacklist();
+
+    int ret = open("test.txt", O_WRONLY);
+    if (ret < 0) {
+        perror("There was an error in opening test.txt");
+        return 1;
+    }
 
     return 0;
 }
