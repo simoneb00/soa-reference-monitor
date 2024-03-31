@@ -11,7 +11,6 @@
 
 #include "file-system.h"
 
-
 ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t * off) {
 
     struct buffer_head *bh = NULL;
@@ -55,6 +54,93 @@ ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t
     return len - ret;
 
 }
+
+
+static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
+    struct file *file = iocb->ki_filp;
+    struct inode *the_inode = file->f_inode;
+    loff_t offset = file->f_pos;
+    uint64_t file_size = i_size_read(the_inode);
+    loff_t block_offset;
+    int block_to_write;
+    struct buffer_head *bh = NULL;
+
+    /* byte size of the payload */
+    size_t count = from->count;
+
+    char *data = kmalloc(count, GFP_KERNEL);
+    if (!data) {
+        pr_err("%s: error in kmalloc allocation\n", MOD_NAME);
+        return 0;
+    }
+
+    size_t copied_bytes = _copy_from_iter((void *)data, count, from);
+    if (copied_bytes != count) {
+        pr_err("%s: failed to copy %ld bytes from iov_iter\n", MOD_NAME, count);
+        return 0;
+    }
+
+    pr_info("%s: Trying to write string: %s", MOD_NAME, data);
+
+    offset = file_size; 
+
+    /* APPEND */
+    block_offset = offset % DEFAULT_BLOCK_SIZE;
+    block_to_write = offset / DEFAULT_BLOCK_SIZE + 2;  // + superblock + inode
+
+    bh = sb_bread(file->f_path.dentry->d_inode->i_sb, block_to_write);
+    if (!bh)
+        return -EIO;
+
+    memcpy(bh->b_data + block_offset, data, count);
+
+    mark_buffer_dirty(bh);
+
+    if (offset + count > file_size)
+        i_size_write(the_inode, offset + count);
+
+    brelse(bh);
+
+    offset += count;
+
+    kfree(data);
+
+    return count;
+    
+}
+
+
+static ssize_t append_to_file(struct file *filp, const char *buf, size_t count, loff_t *offset) {
+
+    struct buffer_head *bh = NULL;
+    struct inode *the_inode = filp->f_inode;
+    uint64_t file_size = i_size_read(the_inode);
+    loff_t block_offset;
+    int block_to_write;
+
+
+    block_offset = *offset % DEFAULT_BLOCK_SIZE;
+    block_to_write = *offset / DEFAULT_BLOCK_SIZE + 2;  // + superblock + inode
+
+    bh = sb_bread(filp->f_path.dentry->d_inode->i_sb, block_to_write);
+    if (!bh)
+        return -EIO;
+
+    memcpy(bh->b_data + block_offset, buf, count);
+
+    mark_buffer_dirty(bh);
+
+    if (*offset + count > file_size)
+        i_size_write(the_inode, *offset + count);
+
+    brelse(bh);
+
+    *offset += count;
+
+    return count;
+    
+}
+
 
 
 struct dentry *onefilefs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flags) {
@@ -126,5 +212,6 @@ const struct inode_operations onefilefs_inode_ops = {
 const struct file_operations onefilefs_file_operations = {
     .owner = THIS_MODULE,
     .read = onefilefs_read,
-    //.write = onefilefs_write //please implement this function to complete the exercise
+    //.write = append_to_file,
+    .write_iter = append_write_iter, 
 };

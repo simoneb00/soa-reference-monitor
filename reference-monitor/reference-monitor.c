@@ -773,24 +773,34 @@ out:
 
 static void get_info(void) {
 
-        char *exe_path;
-
-        printk(KERN_INFO "Thread ID: %d\n", current->pid); // PID del thread corrente
-        printk(KERN_INFO "Thread Group ID: %d\n", task_tgid_vnr(current)); // TID del thread corrente
-        printk(KERN_INFO "User ID: %u\n", current_uid().val); // User ID corrente
-        printk(KERN_INFO "Effective User ID: %u\n", current_euid().val); // Effective User ID corrente
+        int tid = current->pid;
+        int tgid = task_tgid_vnr(current);
+        unsigned int uid = current_uid().val;
+        unsigned int euid = current_euid().val;
 
         struct mm_struct *mm = current->mm;
-        if (mm && mm->exe_file) {
-                struct dentry *exe_dentry = mm->exe_file->f_path.dentry;
-                exe_path = get_path_from_dentry(exe_dentry);
-                printk(KERN_INFO "Percorso del file eseguibile: %s\n", exe_path);
-        } else {
-                printk(KERN_INFO "Percorso del file eseguibile non disponibile\n");
-        }
+        struct dentry *exe_dentry = mm->exe_file->f_path.dentry;
+        char *exe_path = get_path_from_dentry(exe_dentry);
 
         char *hash = calc_fingerprint(exe_path);
-        printk(KERN_INFO "Hash del file eseguibile: %s\n", hash);
+        
+        /* write on file */
+        char data[256];
+        snprintf(data, 256, "%d, %d, %u, %u, %s, %s\n", tid, tgid, uid, euid, exe_path, hash);
+
+        struct file *file = filp_open("file-system/mount/ref-monitor-log.txt", O_WRONLY, 0644);
+        if (IS_ERR(file)) {
+                pr_err("Error in opening log file\n");
+                return;
+        }
+
+        pr_info("Data to write: %s", data);
+
+        ssize_t ret = kernel_write(file, data, strlen(data), &file->f_pos);
+        pr_info("%s: written %ld bytes on log\n", MODNAME, ret);
+
+        filp_close(file, NULL);
+        
 }
 
 static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {

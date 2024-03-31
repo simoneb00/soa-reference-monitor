@@ -19,7 +19,7 @@
 
 #define SINGLEFILEFS_INODES_BLOCK_NUMBER 1
 
-#define UNIQUE_FILE_NAME "reference-monitor-log-file"
+#define UNIQUE_FILE_NAME "ref-monitor-log.txt"
 
 //inode definition
 struct onefilefs_inode {
