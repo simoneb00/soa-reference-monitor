@@ -15,7 +15,12 @@ mount:
 create-fs:
 	dd bs=4096 count=100 if=/dev/zero of=image
 	./singlefilemakefs image
-	mkdir mount
 	
 mount-fs:
-	mount -o loop -t singlefilefs image ./mount/
+	if [ ! -d "/mnt/ref-monitor-fs" ]; then \
+        mkdir "/mnt/ref-monitor-fs"; \
+    else \
+        echo "/mnt/ref-monitor-fs already exists."; \
+    fi
+
+	mount -o loop -t singlefilefs image /mnt/ref-monitor-fs

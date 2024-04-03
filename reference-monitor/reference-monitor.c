@@ -723,6 +723,8 @@ static char *calc_fingerprint(char *filename) {
         loff_t pos = 0;
         int ret;
 
+        pr_info("%s: computing hash for %s content\n", MODNAME, filename);
+
         /* Allocazione del transform hash */
         hash_tfm = crypto_alloc_shash("sha256", 0, 0);
         if (IS_ERR(hash_tfm)) {
@@ -733,9 +735,21 @@ static char *calc_fingerprint(char *filename) {
         /* Apertura del file */
         file = filp_open(filename, O_RDONLY, 0);
         if (IS_ERR(file)) {
-                printk(KERN_ERR "Failed to open file %s\n", filename);
-                crypto_free_shash(hash_tfm);
-                return NULL;
+
+                /* if path starts with '/root/', replace it with '/' */
+                if (strncmp(filename, "/root", 5) == 0) {
+                        memmove(filename, filename + 5, strlen(filename) - 4);
+                }
+
+                pr_info("%s: path transformed to %s\n", MODNAME, filename);
+
+                file = filp_open(filename, O_RDONLY, 0);
+
+                if (IS_ERR(file)) {
+                        printk(KERN_ERR "Failed to open file %s\n", filename);
+                        crypto_free_shash(hash_tfm);
+                        return NULL;
+                }
         }
 
         /* Allocazione del descrittore hash */
@@ -788,15 +802,13 @@ out:
         return result;
 }
 
+
 static void deferred_work(unsigned long data) {
 
-        struct log_data *log_data = container_of((void*)data,packed_work,the_work)->log_data;
-        if (!log_data) {
-                pr_err("Error: log_data pointer is NULL\n");
-                return;
-        }
+        packed_work *the_work = container_of((void*)data,packed_work,the_work);
+        struct log_data *log_data = the_work->log_data;
 
-        pr_info("Exe path is %s\n", log_data->exe_path);
+        pr_info("deferred work got path %s\n", log_data->exe_path);
 
         char *hash = calc_fingerprint(log_data->exe_path);
         
@@ -806,7 +818,7 @@ static void deferred_work(unsigned long data) {
                         log_data->uid, log_data->euid, log_data->exe_path, hash);
 
 
-        struct file *file = filp_open("/home/sbauco/soa-reference-monitor/file-system/mount/ref-monitor-log.txt", O_WRONLY, 0644);
+        struct file *file = filp_open("/mnt/ref-monitor-fs/ref-monitor-log.txt", O_WRONLY, 0644);
         if (IS_ERR(file)) {
                 pr_err("Error in opening log file: %ld\n", PTR_ERR(file));
                 return;
@@ -818,6 +830,7 @@ static void deferred_work(unsigned long data) {
         pr_info("%s: written %ld bytes on log\n", MODNAME, ret);
 
         filp_close(file, NULL);
+        kfree((void*)container_of((void*)data,packed_work,the_work));
 }
 
 static void log_info(void) {
@@ -832,18 +845,17 @@ static void log_info(void) {
         struct dentry *exe_dentry = mm->exe_file->f_path.dentry;
         char *exe_path = get_path_from_dentry(exe_dentry);
 
+        log_data->exe_path = kstrdup(exe_path, GFP_KERNEL);
         log_data->tid = current->pid;
         log_data->tgid = task_tgid_vnr(current);
         log_data->uid = current_uid().val;
         log_data->euid = current_euid().val;
-        log_data->exe_path = exe_path;
 
         /* Schedule hash computation and writing on file in deferred work */
 
         packed_work *def_work;
 
-        def_work = kzalloc(sizeof(packed_work), GFP_KERNEL);
-
+        def_work = kmalloc(sizeof(packed_work), GFP_KERNEL);
         if (def_work == NULL) {
                 pr_err("%s: tasklet buffer allocation failure\n",MODNAME);
                 return;
@@ -852,8 +864,7 @@ static void log_info(void) {
         def_work->buffer = def_work;
         def_work->log_data = log_data;
 
-        AUDIT
-        printk("%s: work buffer allocation success - address is %p\n", MODNAME, def_work);
+        pr_info("Offending path is %s\n", def_work->log_data->exe_path);
 
         __INIT_WORK(&(def_work->the_work),(void*)deferred_work,(unsigned long)(&(def_work->the_work)));
 
