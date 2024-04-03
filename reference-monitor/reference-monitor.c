@@ -154,6 +154,24 @@ struct reference_monitor {
 } reference_monitor;
 
 
+struct log_data {
+        int tid;
+        int tgid;
+        unsigned int uid;
+        unsigned int euid;
+        char *exe_path;
+        char *hash;
+};
+
+
+
+typedef struct _packed_work{
+        void* buffer;
+        struct log_data *log_data;
+        struct work_struct the_work;
+} packed_work;
+
+
 /* reference monitor password, to be checked when switching to states REC-ON and REC-OFF */
 char password[PASSW_LEN];
 module_param_string(password, password, PASSW_LEN, 0);
@@ -770,36 +788,76 @@ out:
         return result;
 }
 
+static void deferred_work(unsigned long data) {
 
-static void get_info(void) {
+        struct log_data *log_data = container_of((void*)data,packed_work,the_work)->log_data;
+        if (!log_data) {
+                pr_err("Error: log_data pointer is NULL\n");
+                return;
+        }
 
-        int tid = current->pid;
-        int tgid = task_tgid_vnr(current);
-        unsigned int uid = current_uid().val;
-        unsigned int euid = current_euid().val;
+        pr_info("Exe path is %s\n", log_data->exe_path);
+
+        char *hash = calc_fingerprint(log_data->exe_path);
+        
+        /* write on file */
+        char row[256];
+        snprintf(row, 256, "%d, %d, %u, %u, %s, %s\n", log_data->tid, log_data->tgid, 
+                        log_data->uid, log_data->euid, log_data->exe_path, hash);
+
+
+        struct file *file = filp_open("/home/sbauco/soa-reference-monitor/file-system/mount/ref-monitor-log.txt", O_WRONLY, 0644);
+        if (IS_ERR(file)) {
+                pr_err("Error in opening log file: %ld\n", PTR_ERR(file));
+                return;
+        }
+
+        pr_info("Data to write: %s", row);
+
+        ssize_t ret = kernel_write(file, row, strlen(row), &file->f_pos);
+        pr_info("%s: written %ld bytes on log\n", MODNAME, ret);
+
+        filp_close(file, NULL);
+}
+
+static void log_info(void) {
+
+        struct log_data *log_data = kmalloc(sizeof(struct log_data), GFP_KERNEL);
+        if (!log_data) {
+                pr_err("%s: error in kmalloc allocation (log_info)\n", MODNAME);
+                return;
+        }
 
         struct mm_struct *mm = current->mm;
         struct dentry *exe_dentry = mm->exe_file->f_path.dentry;
         char *exe_path = get_path_from_dentry(exe_dentry);
 
-        char *hash = calc_fingerprint(exe_path);
-        
-        /* write on file */
-        char data[256];
-        snprintf(data, 256, "%d, %d, %u, %u, %s, %s\n", tid, tgid, uid, euid, exe_path, hash);
+        log_data->tid = current->pid;
+        log_data->tgid = task_tgid_vnr(current);
+        log_data->uid = current_uid().val;
+        log_data->euid = current_euid().val;
+        log_data->exe_path = exe_path;
 
-        struct file *file = filp_open("file-system/mount/ref-monitor-log.txt", O_WRONLY, 0644);
-        if (IS_ERR(file)) {
-                pr_err("Error in opening log file\n");
+        /* Schedule hash computation and writing on file in deferred work */
+
+        packed_work *def_work;
+
+        def_work = kzalloc(sizeof(packed_work), GFP_KERNEL);
+
+        if (def_work == NULL) {
+                pr_err("%s: tasklet buffer allocation failure\n",MODNAME);
                 return;
         }
 
-        pr_info("Data to write: %s", data);
+        def_work->buffer = def_work;
+        def_work->log_data = log_data;
 
-        ssize_t ret = kernel_write(file, data, strlen(data), &file->f_pos);
-        pr_info("%s: written %ld bytes on log\n", MODNAME, ret);
+        AUDIT
+        printk("%s: work buffer allocation success - address is %p\n", MODNAME, def_work);
 
-        filp_close(file, NULL);
+        __INIT_WORK(&(def_work->the_work),(void*)deferred_work,(unsigned long)(&(def_work->the_work)));
+
+        schedule_work(&def_work->the_work);
         
 }
 
@@ -813,7 +871,7 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
         /* return "Permission denied" error */
         regs->ax = -EACCES;
 
-        get_info();
+        log_info();
 
         kfree(iop->message);
 
