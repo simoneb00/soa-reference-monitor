@@ -1,17 +1,22 @@
+MAKE = make -C
+
 all:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD)/syscall-table-discoverer modules
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD)/reference-monitor modules
-	gcc reference-monitor/user/user.c
+	$(MAKE) /lib/modules/$(shell uname -r)/build M=$(PWD)/syscall-table-discoverer modules
+	$(MAKE) /lib/modules/$(shell uname -r)/build M=$(PWD)/reference-monitor modules
+	$(MAKE) /lib/modules/$(shell uname -r)/build M=$(PWD)/file-system modules
+	gcc reference-monitor/user/user.c -o user
 
 clean:
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD)/syscall-table-discoverer clean
-	make -C /lib/modules/$(shell uname -r)/build M=$(PWD)/reference-monitor clean
+	$(MAKE) $(PWD)/syscall-table-discoverer clean
+	$(MAKE) $(PWD)/reference-monitor clean
+	$(MAKE) $(PWD)/file-system clean
 
 mount: 
-	insmod syscall-table-discoverer/the_usctm.ko
-	insmod reference-monitor/the_reference-monitor.ko the_syscall_table=$$(cat /sys/module/the_usctm/parameters/sys_call_table_address) password="p"
+	$(MAKE) syscall-table-discoverer mount
+	$(MAKE) reference-monitor mount
+	$(MAKE) file-system mount-fs
 
 unmount:
 	rmmod the_usctm
 	rmmod the_reference-monitor
-	
+	rmmod the_file-system

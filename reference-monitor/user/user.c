@@ -96,15 +96,19 @@ int main(int argc, char** argv){
 
     write_state();
     add_to_blacklist("test.txt");
-    add_to_blacklist("test/test.txt");
+    add_to_blacklist("test");
     add_to_blacklist("prova");
     print_blacklist();
+    remove_from_blacklist("test.txt");
+    remove_from_blacklist("prova");
+    print_blacklist();
 
+/*
     int ret = open("test.txt", O_WRONLY);
     if (ret < 0) {
         perror("There was an error in opening test.txt");
         return 1;
     }
-
+*/
     return 0;
 }

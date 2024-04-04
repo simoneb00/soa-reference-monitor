@@ -8,15 +8,8 @@ all:
 
 clean:
 	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) clean
-
-mount:
-	insmod the_file-system.ko
-
-create-fs:
-	dd bs=4096 count=100 if=/dev/zero of=image
-	./singlefilemakefs image
 	
-mount-fs:
+mount-fs: mount create-fs
 	if [ ! -d "/mnt/ref-monitor-fs" ]; then \
         mkdir "/mnt/ref-monitor-fs"; \
     else \
@@ -24,3 +17,10 @@ mount-fs:
     fi
 
 	mount -o loop -t singlefilefs image /mnt/ref-monitor-fs
+
+mount:
+	insmod the_file-system.ko
+
+create-fs:
+	dd bs=4096 count=100 if=/dev/zero of=image
+	./singlefilemakefs image

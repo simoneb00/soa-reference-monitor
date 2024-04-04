@@ -19,7 +19,6 @@
 #define EXPORT_SYMTAB
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/fs.h>
 #include <linux/cdev.h>
 #include <linux/errno.h>
 #include <linux/device.h>
@@ -31,22 +30,16 @@
 #include <linux/version.h>
 #include <linux/interrupt.h>
 #include <linux/time.h>
-#include <linux/string.h>
 #include <linux/vmalloc.h>
 #include <linux/cred.h>
-#include <linux/crypto.h>
 #include <asm/page.h>
 #include <asm/cacheflush.h>
 #include <asm/apic.h>
 #include <asm/io.h>
 #include <linux/syscalls.h>
-#include "lib/include/scth.h"
 #include <linux/err.h>
 #include <linux/unistd.h>
-#include <linux/uaccess.h>
-#include <crypto/hash.h>
 #include <linux/spinlock.h>
-#include <linux/kprobes.h>
 #include <linux/namei.h>
 #include <linux/fs.h>
 #include <linux/list.h>
@@ -57,67 +50,14 @@
 #include <linux/dcache.h>
 #include <linux/fs_struct.h>
 #include <linux/path.h>
-#include <crypto/hash.h>
 
+#include "lib/include/scth.h"
+#include "reference-monitor.h"
+#include "utils.h"
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Simone Bauco");
 MODULE_DESCRIPTION("Kernel Level Reference Monitor for File Protection");
-
-#define MODNAME "REFERENCE MONITOR"
-#define PASSW_LEN 32
-#define AUDIT if(1)
-#define NUM_KRETPROBES 7
-
-/* the first 6 arguments in rdi, rsi, rdx, rcx, r8, r9 */
-
-/* FUNCTIONS TO BE PROBED 
-*       static struct file *path_openat(struct nameidata *nd, const struct open_flags *op, unsigned flags)
-*       int do_unlinkat(int dfd, struct filename *name)
-*       int do_renameat2(int olddfd, struct filename *from, int newdfd, struct filename *to, unsigned int flags)
-*       int do_linkat(int olddfd, struct filename *old, int newdfd, struct filename *new, int flags)
-*       int do_symlinkat(struct filename *from, int newdfd, struct filename *to)
-*       int security_inode_mkdir(struct inode *dir, struct dentry *dentry, umode_t mode)
-*       int security_inode_create(struct inode *dir, struct dentry *dentry, umode_t mode)
-*/
-
-char *encrypt_password(const char *password);
-
-struct nameidata {
-	struct path	path;
-	struct qstr	last;
-	struct path	root;
-	struct inode	*inode; /* path.dentry.d_inode */
-	unsigned int	flags, state;
-	unsigned	seq, next_seq, m_seq, r_seq;
-	int		last_type;
-	unsigned	depth;
-	int		total_link_count;
-	struct saved {
-		struct path link;
-		struct delayed_call done;
-		const char *name;
-		unsigned seq;
-	} *stack, internal[2];
-	struct filename	*name;
-	struct nameidata *saved;
-	unsigned	root_seq;
-	int		dfd;
-	vfsuid_t	dir_vfsuid;
-	umode_t		dir_mode;
-};
-
-struct open_flags {
-	int open_flag;
-	umode_t mode;
-	int acc_mode;
-	int intent;
-	int lookup_flags;
-};
-
-struct invalid_operation_data {
-        char *message;
-};
 
 /* kretprobes structs */
 static struct kretprobe vfs_open_retprobe;
@@ -128,50 +68,13 @@ static struct kretprobe do_linkat_retprobe;
 static struct kretprobe security_inode_mkdir_retprobe;
 static struct kretprobe security_inode_create_retprobe;
 
-struct kretprobe **rps; /* kretprobes array */
+/* kretprobes array */
+struct kretprobe **rps;     
 
-struct blacklist_entry {
-        struct list_head list;
-        char *path;
-        char *filename;
-        unsigned long inode_number;
-};
+/* reference monitor struct */
+struct reference_monitor reference_monitor;    
 
-struct blacklist_dir_entry {
-        struct list_head list;
-        char *path;
-};
-
-/** @struct reference_monitor
- *  @brief Reference Monitor Basic Structure
- */
-struct reference_monitor {
-        int state;                              /**< The state can be one of the following: OFF (0), ON (1), REC-OFF (2), REC-ON (3)*/
-        char *password;                         /**< Password for Reference Monitor reconfiguration */
-        struct list_head blacklist;             /**< Files to be protected */
-        struct list_head blacklist_dir;         /**< Directories to be protected */
-        spinlock_t lock;                        /**< Lock for synchronization */
-} reference_monitor;
-
-
-struct log_data {
-        int tid;
-        int tgid;
-        unsigned int uid;
-        unsigned int euid;
-        char *exe_path;
-        char *hash;
-};
-
-
-
-typedef struct _packed_work{
-        void* buffer;
-        struct log_data *log_data;
-        struct work_struct the_work;
-} packed_work;
-
-
+// TODO sistema gestione password
 /* reference monitor password, to be checked when switching to states REC-ON and REC-OFF */
 char password[PASSW_LEN];
 module_param_string(password, password, PASSW_LEN, 0);
@@ -181,96 +84,15 @@ unsigned long the_syscall_table = 0x0;
 module_param(the_syscall_table, ulong, 0660);
 
 unsigned long the_ni_syscall;
-
 unsigned long new_sys_call_array[] = {0x0, 0x0, 0x0, 0x0, 0x0, 0x0};                 /* new syscalls addresses array */
-#define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))  /* number of entries to be hacked */
-int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};                  /* array of free entries on the syscall table */
+#define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))       /* number of entries to be hacked */
+int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};                       /* array of free entries on the syscall table */
 
 
-/* UTILS */
-
-char *get_path_from_dentry(struct dentry *dentry) {
-
-        char *buffer = (char *)__get_free_page(GFP_KERNEL);
-        if (!buffer)
-                return NULL;
-
-        char *full_path = dentry_path_raw(dentry, buffer, PATH_MAX);
-        if (IS_ERR(full_path)) {
-                pr_err("dentry_path_raw failed: %li", PTR_ERR(full_path));
-        } 
-        free_page((unsigned long)buffer);
-
-        return full_path;
-}
-
-char *get_full_path(char *rel_path) {
-
-        char *k_full_path = NULL;
-        struct path path;
-        int ret;
-
-        k_full_path = kmalloc(PATH_MAX, GFP_KERNEL);
-        if (!k_full_path) {
-                pr_err("%s: error in kmalloc (get_full_path)\n", MODNAME);
-                return NULL; 
-        }
-
-        ret = kern_path(rel_path, LOOKUP_FOLLOW, &path);
-        if (ret == -ENOENT) {
-                ret = kern_path(strcat(rel_path, "~"), LOOKUP_FOLLOW, &path);
-        }
-        if (ret) {
-                pr_err("%s: full path not found (error %d)\n", MODNAME, ret);
-                return NULL;
-        }
-
-        ret = snprintf(k_full_path, PATH_MAX, "%s", d_path(&path, k_full_path, PATH_MAX));
-        if (ret < 0 || ret >= PATH_MAX) {
-                kfree(k_full_path);
-                pr_err("%s: full path is too long\n", MODNAME);
-        }
-
-        char *tilde_pos = strrchr(k_full_path, '~');
-        if (tilde_pos != NULL) {
-                *tilde_pos = '\0'; 
-        }
-
-        return k_full_path;
-}
-
-unsigned long retrieve_inode_number(char *path) {
-
-        struct path lookup_path;
-        struct inode *inode;
-
-        if (kern_path(path, 0, &lookup_path) != 0) {
-                pr_err("%s: Failed to lookup path %s\n", MODNAME, path);
-                return -1;
-        }
-
-        inode = lookup_path.dentry->d_inode;
-
-        return inode->i_ino;
-
-}
-
-/* SYSCALL UTILS */
-
-int is_directory(char *path) {
-        struct path p;
-        int error;
-        struct inode *inode;
-
-        error = kern_path(path, LOOKUP_FOLLOW, &p);
-        if(error) {
-                pr_err("%s: error in kern_path (is_directory)\n", MODNAME);
-        }
-        inode = p.dentry->d_inode;
-
-        return S_ISDIR(inode->i_mode);
-}
-
+/**
+ * Add directory path to the reference monitor's blacklist
+ * @param path path to add
+*/
 int add_dir_to_rm(char *path) {
         struct blacklist_dir_entry *new_entry;
 
@@ -294,6 +116,12 @@ int add_dir_to_rm(char *path) {
         return 0;
 }
 
+
+/**
+ * Add file path and filename to the reference monitor's blacklist
+ * @param path full path
+ * @param rel_path relative path or filename
+*/
 int add_file_to_rf(char *path, char *rel_path) {
 
         struct blacklist_entry *new_entry;
@@ -328,13 +156,11 @@ int add_file_to_rf(char *path, char *rel_path) {
         return 0;
 }
 
-struct custom_dir_context {
-    struct dir_context dir_ctx; 
-    char *dir_path; 
-};
-
-int add_directory_to_rf(struct file *dir, char *dir_name);
-
+/**
+ * Function executed for each element (file/subdirectory) in the directory: if the sub-element is a subdirectory, 
+ * the same function is recursively called; otherwise (i.e., the sub-element is a file), the file is added to the 
+ * blacklist 
+*/
 static bool process_dir_entry(struct dir_context *dir, const char *name, int name_len,
                         loff_t offset, u64 ino, unsigned int d_type) {
 
@@ -391,7 +217,9 @@ static bool process_dir_entry(struct dir_context *dir, const char *name, int nam
 
 }
 
-
+/**
+ * Iterate on each element in the directory, and add it to the blacklist
+*/
 int add_directory_to_rf(struct file *dir, char *dir_path) {
 
         /* add directory path to blacklist */
@@ -417,7 +245,7 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
 #endif
         if (reference_monitor.state < 2) {
                 printk(KERN_ERR "%s: the reference monitor is not in a reconfiguration state\n", MODNAME);
-                return -EACCES;  // todo is EACCES correct?
+                return -EACCES;
         }
 
         char *path = get_full_path(rel_path);
@@ -453,22 +281,41 @@ asmlinkage long sys_remove_path_from_rf(char *path) {
 #endif
 
         struct blacklist_entry *entry, *temp;
+        struct blacklist_dir_entry *dir_entry, *dir_temp;
+
+        char *full_path = get_full_path(path);
+        if (!full_path) {
+                return -EINVAL;
+        }
+
+        if (is_directory(full_path)) {
+                spin_lock(&reference_monitor.lock);
+                list_for_each_entry_safe(dir_entry, dir_temp, &reference_monitor.blacklist_dir, list) {
+                        if (!strcmp(entry->path, full_path)) {
+                                list_del(&entry->list);
+                                kfree(entry->path);
+                                kfree(entry);
+                        }
+                }
+                spin_unlock(&reference_monitor.lock);
+        }
+
 
         spin_lock(&reference_monitor.lock);
         list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist, list) {
-                if (strcmp(entry->path, path) == 0) {
-                list_del(&entry->list);
-                kfree(entry->path);
-                kfree(entry);
+                if (!strstr(full_path, entry->path)) {
+                        list_del(&entry->list);
+                        kfree(entry->path);
+                        kfree(entry);
                 }
         }
         spin_unlock(&reference_monitor.lock);
-
+        
         return 0;
 }
 
 
-/* print black_list (only for debug) */
+/* print blacklist */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
 __SYSCALL_DEFINEx(1, _print_black_list, int, none) {
 #else
@@ -497,8 +344,9 @@ __SYSCALL_DEFINEx(1, _read_rf_state, int, none) {
 #else
 asmlinkage long sys_read_rf_state(void) {
 #endif
+        AUDIT {
         printk("%s: The state is %d\n", MODNAME, reference_monitor.state);
-
+        }
 	return reference_monitor.state;
 	
 }
@@ -517,18 +365,10 @@ asmlinkage long sys_write_rf_state(int state) {
                 return -EINVAL;
         }
 
-
-        /* check state number */
-        if (state < 0 || state > 3) {
-                printk(KERN_ERR "%s: Unexpected state", MODNAME);
-                return -EINVAL;
-        }
-
         kuid_t euid = current_euid();
 
         /* check EUID */
         if (!uid_eq(euid, GLOBAL_ROOT_UID)) {
-                printk(KERN_ERR "%s: Access denied: only root (EUID 0) can change the state\n", MODNAME);
                 printk(KERN_ERR "%s: Access denied: only root (EUID 0) can change the state\n", MODNAME);
                 return -EPERM;
         }   
@@ -544,7 +384,9 @@ asmlinkage long sys_write_rf_state(int state) {
         spin_lock(&reference_monitor.lock);
 
         /* state update */
+        AUDIT {
         printk("%s: password check successful, changing the state to %d\n", MODNAME, state);
+        }
         reference_monitor.state = state;
 
         spin_unlock(&reference_monitor.lock);
@@ -554,12 +396,16 @@ asmlinkage long sys_write_rf_state(int state) {
                 for (int i = 0; i < NUM_KRETPROBES; i++) {
                         enable_kretprobe(rps[i]);
                 }
+                AUDIT {
                 pr_info("%s: kretprobes enabled\n", MODNAME);
+                }
         } else {
                 for (int i = 0; i < NUM_KRETPROBES; i++) {
                         disable_kretprobe(rps[i]);
                 }
+                AUDIT {
                 pr_info("%s: kretprobes disabled\n", MODNAME);
+                }
         }
         
         return reference_monitor.state;
@@ -576,58 +422,10 @@ long sys_print_blacklist = (unsigned long) __x64_sys_print_black_list;
 #else
 #endif
 
-/* UTILS */
-
-static char *get_dir_path_from_fd(int fd) {
-
-        struct file *file;
-        char *buffer, *path_name;
-        int ret;
-
-        file = fget(fd);
-        if (!file) {
-                printk(KERN_ERR "Failed to get file from file descriptor\n");
-                return NULL;
-        }
-
-        struct path p = file->f_path;
-        struct dentry *d = p.dentry;
-
-        buffer = (char *)__get_free_page(GFP_KERNEL);
-        if (!buffer)
-                return NULL;
-        path_name = dentry_path_raw(d, buffer, PAGE_SIZE);
-
-        if (IS_ERR(path_name))
-                printk(KERN_ERR "ERR");
-
-        if ((ret=kern_path(path_name, LOOKUP_FOLLOW, &p))) {
-                printk("kern_path returned %d for path_name \"%s\", inode %ld\n", ret, path_name, d->d_inode->i_ino);
-                return NULL;
-        }
-
-        free_page((unsigned long)buffer);
-
-        return strcat(path_name, "/");
-}
-
-static char *get_full_path_from_fd(int fd, char *filename) {
-
-        /* get parent directory full path */
-        char *dir = get_dir_path_from_fd(fd);
-        if (!dir) {
-                pr_err("%s: failed to get dir path\n", MODNAME);
-                return NULL;
-        }
-
-        /* concatenate parent directory and filename */
-        char *full_path = strcat(dir, filename);
-        return full_path;
-}
-
 
 /**
- * Check if this file is blacklisted, retrieve full path from filename
+ *  Check if this file is blacklisted
+ *  @param filename filename, from which the file's full path is retrieved 
 */
 int is_blacklisted(char *filename) {
         struct blacklist_entry *entry;
@@ -646,11 +444,6 @@ int is_blacklisted(char *filename) {
                         if (!strcmp(full_path, entry->path)) {
                                 return 1;
                         }
-
-                        /* check if file belongs to a blacklisted directory */
-                        //else if (strstr(full_path, entry->path) != NULL) {
-                        //        return 1;
-                        //}
                 }
                 
         }
@@ -660,7 +453,9 @@ int is_blacklisted(char *filename) {
 
 
 /**
- * Check if this file is blacklisted, retrieve full path from file descriptor
+ * Check if this file is blacklisted
+ * @param path filename/relative path
+ * @param fd file descriptor, from which the full path is retrieved
 */
 int is_blacklisted_fd(char *path, int fd) {
         struct blacklist_entry *entry;
@@ -685,6 +480,11 @@ int is_blacklisted_fd(char *path, int fd) {
         return 0;
 }
 
+/**
+ * Check if a directory is blacklisted (a directory is considered to be blacklisted if its path includes 
+ * a blacklisted directory's path, i.e. it is a subdirectory of a blacklisted directory)
+ * @param path directory path
+*/
 int is_blacklisted_dir(char *path) {
 
         struct blacklist_dir_entry *entry;
@@ -697,6 +497,12 @@ int is_blacklisted_dir(char *path) {
         return 0;
 }
 
+/**
+ * This function implements protection against hard links: if a file is an hard link to another file, these two
+ * files share the inode number, so this function checks if the inode number of a write-accessed file is blacklisted 
+ * @param path full path of the file
+ * @param inode_number inode number of the file 
+*/
 int is_blacklisted_hl(char *path, unsigned long inode_number) {
 
         struct blacklist_entry *entry;
@@ -714,133 +520,54 @@ int is_blacklisted_hl(char *path, unsigned long inode_number) {
  * The following functions implement the core functionalities of the reference monitor. 
 */
 
-static char *calc_fingerprint(char *filename) {
-        struct crypto_shash *hash_tfm;
-        struct file *file;
-        struct shash_desc *desc;
-        unsigned char *digest;
-        char *result = NULL;
-        loff_t pos = 0;
-        int ret;
-
-        pr_info("%s: computing hash for %s content\n", MODNAME, filename);
-
-        /* Allocazione del transform hash */
-        hash_tfm = crypto_alloc_shash("sha256", 0, 0);
-        if (IS_ERR(hash_tfm)) {
-                printk(KERN_ERR "Failed to allocate hash transform\n");
-                return NULL;
-        }
-
-        /* Apertura del file */
-        file = filp_open(filename, O_RDONLY, 0);
-        if (IS_ERR(file)) {
-
-                /* if path starts with '/root/', replace it with '/' */
-                if (strncmp(filename, "/root", 5) == 0) {
-                        memmove(filename, filename + 5, strlen(filename) - 4);
-                }
-
-                pr_info("%s: path transformed to %s\n", MODNAME, filename);
-
-                file = filp_open(filename, O_RDONLY, 0);
-
-                if (IS_ERR(file)) {
-                        printk(KERN_ERR "Failed to open file %s\n", filename);
-                        crypto_free_shash(hash_tfm);
-                        return NULL;
-                }
-        }
-
-        /* Allocazione del descrittore hash */
-        desc = kmalloc(sizeof(struct shash_desc) + crypto_shash_descsize(hash_tfm), GFP_KERNEL);
-        if (!desc) {
-                printk(KERN_ERR "Failed to allocate hash descriptor\n");
-                goto out;
-        }
-        desc->tfm = hash_tfm;
-
-        /* Allocazione del buffer di digest */
-        digest = kmalloc(32, GFP_KERNEL);
-        if (!digest) {
-                printk(KERN_ERR "Failed to allocate hash buffer\n");
-                goto out;
-        }
-
-        /* Calcolo dell'hash del contenuto del file */
-        crypto_shash_init(desc);
-        while (1) {
-                char buf[PAGE_SIZE];
-                ret = kernel_read(file, buf, sizeof(buf), &pos);
-                if (ret <= 0)
-                break;
-                crypto_shash_update(desc, buf, ret);
-        }
-        crypto_shash_final(desc, digest);
-
-        /* Allocazione della stringa risultato */
-        result = kmalloc(2 * 32 + 1, GFP_KERNEL);
-        if (!result) {
-                printk(KERN_ERR "Failed to allocate memory for result\n");
-                goto out;
-        }
-
-        /* Formattazione dell'hash come stringa esadecimale */
-        for (int i = 0; i < 32; i++)
-                sprintf(&result[i * 2], "%02x", digest[i]);
-                
-out:
-        if (digest)
-                kfree(digest);
-        if (desc)
-                kfree(desc);
-        if (file)
-                filp_close(file, NULL);
-        if (hash_tfm)
-                crypto_free_shash(hash_tfm);
-
-        return result;
-}
-
-
+/**
+ * Deferred work to be carried out at each invalid access (i.e., offending program file's hash computation and writing to the log)
+ * @param data address of a packed_work element
+*/
 static void deferred_work(unsigned long data) {
 
         packed_work *the_work = container_of((void*)data,packed_work,the_work);
         struct log_data *log_data = the_work->log_data;
 
-        pr_info("deferred work got path %s\n", log_data->exe_path);
-
+        /* fingerprint (hash) computation */
         char *hash = calc_fingerprint(log_data->exe_path);
         
-        /* write on file */
+        /* string to be written to the log */
         char row[256];
         snprintf(row, 256, "%d, %d, %u, %u, %s, %s\n", log_data->tid, log_data->tgid, 
                         log_data->uid, log_data->euid, log_data->exe_path, hash);
 
 
-        struct file *file = filp_open("/mnt/ref-monitor-fs/ref-monitor-log.txt", O_WRONLY, 0644);
+        struct file *file = filp_open(LOG_FILE, O_WRONLY, 0644);
         if (IS_ERR(file)) {
                 pr_err("Error in opening log file: %ld\n", PTR_ERR(file));
                 return;
         }
 
-        pr_info("Data to write: %s", row);
-
         ssize_t ret = kernel_write(file, row, strlen(row), &file->f_pos);
+
+        AUDIT {
         pr_info("%s: written %ld bytes on log\n", MODNAME, ret);
+        }
 
         filp_close(file, NULL);
         kfree((void*)container_of((void*)data,packed_work,the_work));
 }
 
+/**
+ * Collect TID, TGID, UID, EUID and the offending program's full path, and schedule the deferred work (fingerprint
+ * computation and writing to log) 
+*/
 static void log_info(void) {
 
+        /* allocate a struct log_data, to gather all data to be logged */
         struct log_data *log_data = kmalloc(sizeof(struct log_data), GFP_KERNEL);
         if (!log_data) {
                 pr_err("%s: error in kmalloc allocation (log_info)\n", MODNAME);
                 return;
         }
 
+        /* get path of the offending program */
         struct mm_struct *mm = current->mm;
         struct dentry *exe_dentry = mm->exe_file->f_path.dentry;
         char *exe_path = get_path_from_dentry(exe_dentry);
@@ -852,7 +579,6 @@ static void log_info(void) {
         log_data->euid = current_euid().val;
 
         /* Schedule hash computation and writing on file in deferred work */
-
         packed_work *def_work;
 
         def_work = kmalloc(sizeof(packed_work), GFP_KERNEL);
@@ -864,14 +590,16 @@ static void log_info(void) {
         def_work->buffer = def_work;
         def_work->log_data = log_data;
 
-        pr_info("Offending path is %s\n", def_work->log_data->exe_path);
-
         __INIT_WORK(&(def_work->the_work),(void*)deferred_work,(unsigned long)(&(def_work->the_work)));
 
         schedule_work(&def_work->the_work);
         
 }
 
+/**
+ * Return handler shared among all kretprobes: it prints a specific error message, updates the return
+ * code to -EACCES, and triggers log management
+*/
 static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         /* get message */
@@ -889,7 +617,9 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
         return 0;
 }
 
-
+/**
+ * Entry handler for the function do_unlinkat (file/directory deletion)
+*/
 static int do_unlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         struct invalid_operation_data *iop;
@@ -921,12 +651,17 @@ block_unlink:
         sprintf(message, "%s [BLOCKED]: Deletion attempt on file %s\n", MODNAME, filename);
         iop->message = kstrdup(message, GFP_KERNEL);
 
+        /* update target file descriptor to an invalid one (-1) */
         regs->di = -1;
         return 0;
 
         
 }
 
+
+/**
+ * Entry handler for the function vfs_open (write-openings)
+*/
 static int vfs_open_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         struct invalid_operation_data *iop;
@@ -954,6 +689,7 @@ static int vfs_open_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
                         sprintf(message, "%s [BLOCKED]: Writing attempt on blacklisted file %s\n", MODNAME, full_path);
                         iop->message = kstrdup(message, GFP_KERNEL);
 
+                        /* schedule return handler execution, that will update the return value (fd) to -1  */
                         return 0;
                 }
                 
@@ -963,6 +699,9 @@ static int vfs_open_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
    
 }
 
+/**
+ * Entry handler for the functions security_inode_mkdir and security_inode_create (directory/file creation)
+*/
 static int blacklisted_directory_update_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         struct invalid_operation_data *iop;
@@ -970,18 +709,7 @@ static int blacklisted_directory_update_handler(struct kretprobe_instance *ri, s
 
         struct dentry *dentry = (struct dentry *)regs->si;
 
-        char *buffer, *full_path;
-
-        buffer = (char *)__get_free_page(GFP_KERNEL);
-        if (!buffer)
-                return 1;
-
-        full_path = dentry_path_raw(dentry, buffer, PATH_MAX);
-        if (IS_ERR(full_path)) {
-                pr_err("dentry_path_raw failed: %li", PTR_ERR(full_path));
-        } 
-
-        free_page((unsigned long)buffer);
+        char *full_path = get_path_from_dentry(dentry);
 
         if (is_blacklisted_dir(full_path)) {
                 /* set message */
@@ -995,6 +723,9 @@ static int blacklisted_directory_update_handler(struct kretprobe_instance *ri, s
         return 1;
 }
 
+/**
+ * Entry handler for the function do_renameat2 (move/copy operations)
+*/
 static int do_renameat2_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         struct invalid_operation_data *iop;
@@ -1010,6 +741,7 @@ static int do_renameat2_handler(struct kretprobe_instance *ri, struct pt_regs *r
                 sprintf(message, "%s [BLOCKED]: Renaming attempt on file %s\n", MODNAME, path);
                 iop->message = kstrdup(message, GFP_KERNEL);
 
+                /* update target file descriptor to an invalid one (-1) */
                 regs->di = -1;
                 return 0;
         }
@@ -1017,6 +749,10 @@ static int do_renameat2_handler(struct kretprobe_instance *ri, struct pt_regs *r
         return 1;
 }
 
+
+/**
+ * Entry handler for the function do_linkat (hard link creation)
+*/
 static int do_linkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         struct invalid_operation_data *iop;
@@ -1027,7 +763,7 @@ static int do_linkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs
 
         int dfd = (int)regs->di;
 
-        if (dfd == AT_FDCWD) {
+        if (dfd == AT_FDCWD) {  /* the path is relative to the PWD */
                 if (is_blacklisted(path)) {
                         goto hlink_block;
                 } 
@@ -1046,12 +782,17 @@ hlink_block:
         sprintf(message, "%s [BLOCKED]: Hard link creation on file %s\n", MODNAME, path);
         iop->message = kstrdup(message, GFP_KERNEL);
 
+        /* update target file descriptor to an invalid one (-1) */
         regs->di = -1;
         return 0;
 
 
 }
 
+
+/**
+ * Entry handler for the function do_symlinkat (symlink creation)
+*/
 static int do_symlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         struct invalid_operation_data *iop;
@@ -1068,6 +809,7 @@ static int do_symlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *r
                 sprintf(message, "%s [BLOCKED]: Symlink creation on file %s\n", MODNAME, path);
                 iop->message = kstrdup(message, GFP_KERNEL);
 
+                /* update new file's descriptor to an invalid one (-1) */
                 regs->si = -1;
                 return 0;
         }
@@ -1075,8 +817,12 @@ static int do_symlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *r
         return 1;
 }
 
-
-/* UTILS */
+/**
+ * Set the struct kretprobe
+ * @param krp struct kretprobe
+ * @param symbol_name name of the function to be probed
+ * @param entry_handler kretprobe'e entry handler
+*/
 static void set_kretprobe(struct kretprobe *krp, char *symbol_name, kretprobe_handler_t entry_handler) {
         krp->kp.symbol_name = symbol_name;
         krp->handler = (kretprobe_handler_t)ret_handler;
@@ -1090,6 +836,7 @@ static int kretprobe_init(void)
 {
         int ret;
 
+        /* initialize all kretprobes */
         set_kretprobe(&vfs_open_retprobe, "vfs_open", (kretprobe_handler_t)vfs_open_handler);
         set_kretprobe(&do_unlinkat_retprobe, "do_unlinkat", (kretprobe_handler_t)do_unlinkat_handler);
         set_kretprobe(&do_renameat2_retprobe, "do_renameat2", (kretprobe_handler_t)do_renameat2_handler);
@@ -1098,14 +845,13 @@ static int kretprobe_init(void)
         set_kretprobe(&security_inode_mkdir_retprobe, "security_inode_mkdir", (kretprobe_handler_t)blacklisted_directory_update_handler);
         set_kretprobe(&security_inode_create_retprobe, "security_inode_create", (kretprobe_handler_t)blacklisted_directory_update_handler);
         
-
+        /* kretprobes array allocation */
         rps = kmalloc(NUM_KRETPROBES*sizeof(struct kretprobe *), GFP_KERNEL);
         if (rps == NULL) {
                 pr_err("%s: kmalloc allocation of rps failed\n", MODNAME);
                 return -ENOMEM;
         }
         
-
         rps[0] = &vfs_open_retprobe;
         rps[1] = &do_unlinkat_retprobe;
         rps[2] = &do_renameat2_retprobe;
@@ -1119,16 +865,12 @@ static int kretprobe_init(void)
 		printk("%s: kretprobes registration failed, returned %d\n", MODNAME, ret);
 		return ret;
 	}
-	printk("%s: kretprobes correctly installed\n", MODNAME);
+        AUDIT {
+	pr_info("%s: kretprobes correctly installed\n", MODNAME);
+        }
 
 	return 0;
 }
-
-
-/* INITIALIZATION FUNCTIONS 
- * the following functions are used in the module's initialization phase,
- * in order to initialize the syscalls and encrypt the reference monitor password.
-*/
 
 
 /**
@@ -1171,73 +913,11 @@ int initialize_syscalls(void) {
 
 	protect_memory();
 
+        AUDIT {
         printk("%s: all new system-calls correctly installed on sys-call table\n",MODNAME);
+        }
 
         return 0;
-}
-
-/**
- * @brief Password encryption (SHA256)
- * @param password Password to be encrypted
- * @returns Encrypted password
- */
-char *encrypt_password(const char *password) {  
-        struct crypto_shash *hash_tfm;
-        struct shash_desc *desc;
-        unsigned char *digest;
-        char *result = NULL;
-        int ret = -ENOMEM;
-
-        /* hash transform allocation */
-        hash_tfm = crypto_alloc_shash("sha256", 0, 0);
-        if (IS_ERR(hash_tfm)) {
-                printk(KERN_ERR "Failed to allocate hash transform\n");
-                return NULL;
-        }
-
-        /* hash descriptor allocation */
-        desc = kmalloc(sizeof(struct shash_desc) + crypto_shash_descsize(hash_tfm), GFP_KERNEL);
-        if (!desc) {
-                printk(KERN_ERR "Failed to allocate hash descriptor\n");
-                goto out;
-        }
-        desc->tfm = hash_tfm;
-
-        /* digest allocation */
-        digest = kmalloc(32, GFP_KERNEL);
-        if (!digest) {
-                printk(KERN_ERR "Failed to allocate hash buffer\n");
-                goto out;
-        }
-
-        /* hash computation */
-        ret = crypto_shash_digest(desc, password, strlen(password), digest);
-        if (ret) {
-                printk(KERN_ERR "Failed to calculate hash\n");
-                goto out;
-        }
-
-        /* result allocation */
-        result = kmalloc(2 * 32 + 1, GFP_KERNEL);
-        if (!result) {
-                printk(KERN_ERR "Failed to allocate memory for result\n");
-                goto out;
-        }
-
-        /* printing result */
-        for (int i = 0; i < 32; i++)
-                sprintf(&result[i * 2], "%02x", digest[i]);
-        
-out:
-        if (digest)
-                kfree(digest);
-        if (desc)
-                kfree(desc);
-        if (hash_tfm)
-                crypto_free_shash(hash_tfm);
-
-
-        return result;
 }
 
 
@@ -1245,27 +925,31 @@ int init_module(void) {
 
         int ret;
 
-        /* SYSCALL TABLE UPDATE (NEW SYSCALL INSERTION) */
+        /* syscall table update (add new syscalls) */
         ret = initialize_syscalls();
         if (ret != 0) {
                 return ret;
         }
 
-        /* REFERENCE MONITOR INITIALIZATION */
+        /* reference monitor initialization */
+        AUDIT {
         printk("%s: setting initial state to OFF (0)\n", MODNAME);
+        }
         reference_monitor.state = 0;
 
+        /* blacklists initialization */
         INIT_LIST_HEAD(&reference_monitor.blacklist);
         INIT_LIST_HEAD(&reference_monitor.blacklist_dir);
         
+        /* spinlock setup */
         DEFINE_SPINLOCK(lock);
         reference_monitor.lock = lock;
 
-        /* PASSWORD SETUP */
+        /* password setup */
         char *enc_password = encrypt_password(password); 
         reference_monitor.password = enc_password;
 
-        /* KPROBES INITIALIZATION */
+        /* kretprobes setup */
         kretprobe_init();
 
         return 0;
@@ -1277,7 +961,9 @@ void cleanup_module(void) {
 
         int i;
                 
+        AUDIT{
         printk("%s: shutting down\n",MODNAME);
+        }
 
         /* syscall table restoration */
 	unprotect_memory();
@@ -1288,8 +974,10 @@ void cleanup_module(void) {
         printk("%s: sys-call table restored to its original content\n",MODNAME);
 
         /* kretprobes unregistration*/
+        AUDIT{
         for (int i = 0; i < NUM_KRETPROBES; i++) {
                 printk(KERN_INFO "Missed probing %d instances of %s\n", rps[i]->nmissed, rps[i]->kp.symbol_name);
+        }
         }
         unregister_kretprobes(rps, NUM_KRETPROBES);
         
