@@ -6,3 +6,4 @@ char *get_dir_path_from_fd(int fd);
 char *get_full_path_from_fd(int fd, char *filename);
 char *calc_fingerprint(char *filename);
 char *encrypt_password(const char *password);
+char *add_trailing_slash(char *input);

@@ -84,8 +84,8 @@ void add_to_blacklist(char *path) {
     }
 }
 
-void remove_from_blacklist(char *path) {
-    int ret = syscall(RM_FROM_BLACKLIST, path);
+void remove_from_blacklist(char *path, int mode) {
+    int ret = syscall(RM_FROM_BLACKLIST, path, mode);
     printf("Syscall remove_from_blacklist returned %d\n", ret);
 }
 
@@ -99,16 +99,15 @@ int main(int argc, char** argv){
     add_to_blacklist("test");
     add_to_blacklist("prova");
     print_blacklist();
-    remove_from_blacklist("test.txt");
-    remove_from_blacklist("prova");
+    remove_from_blacklist("test", 1);
     print_blacklist();
 
-/*
+
     int ret = open("test.txt", O_WRONLY);
     if (ret < 0) {
         perror("There was an error in opening test.txt");
         return 1;
     }
-*/
+
     return 0;
 }

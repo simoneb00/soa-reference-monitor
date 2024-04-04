@@ -295,3 +295,20 @@ out:
         return result;
 }
 
+
+char *add_trailing_slash(char *input) {
+    size_t len = strlen(input);
+    char *result = kmalloc(len + 2, GFP_KERNEL); 
+
+    if (result == NULL) {
+        pr_err("Errore di allocazione di memoria\n");
+        return NULL;
+    }
+
+    strcpy(result, input); 
+    result[len] = '/';      
+    result[len + 1] = '\0'; 
+
+    return result;
+}
+

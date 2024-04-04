@@ -4,6 +4,9 @@
 #define AUDIT if(1)
 #define NUM_KRETPROBES 7
 
+/* syscall remove from blacklist modes */
+#define DELETE_DIRS_ONLY 0		// remove only directory and eventual subdirectories
+#define DELETE_ALL 1			// remove both directory and files/subdirectories
 
 char *encrypt_password(const char *password);
 int add_directory_to_rf(struct file *dir, char *dir_name);

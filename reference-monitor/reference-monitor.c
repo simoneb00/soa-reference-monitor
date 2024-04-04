@@ -245,7 +245,7 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
 #endif
         if (reference_monitor.state < 2) {
                 printk(KERN_ERR "%s: the reference monitor is not in a reconfiguration state\n", MODNAME);
-                return -EACCES;
+                return -EPERM;
         }
 
         char *path = get_full_path(rel_path);
@@ -275,23 +275,51 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
 
 /* remove path from reference monitor syscall */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(1, _remove_path_from_rf, char *, path) {
+__SYSCALL_DEFINEx(2, _remove_path_from_rf, char *, path, int, mode) {
 #else 
-asmlinkage long sys_remove_path_from_rf(char *path) {
+asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
 #endif
 
         struct blacklist_entry *entry, *temp;
         struct blacklist_dir_entry *dir_entry, *dir_temp;
+        char *full_path, *dir_path;
 
-        char *full_path = get_full_path(path);
-        if (!full_path) {
+        if (mode != 0 && mode != 1) {
+                pr_err("%s: invalid mode in sys_remove_path_from_rf\n", MODNAME);
                 return -EINVAL;
         }
 
+        full_path = get_full_path(path);
+        if (!full_path) {
+                return -ENOENT;
+        }
+
         if (is_directory(full_path)) {
+
+                dir_path = add_trailing_slash(full_path);
+
+                /* delete directory from directories black list */
                 spin_lock(&reference_monitor.lock);
                 list_for_each_entry_safe(dir_entry, dir_temp, &reference_monitor.blacklist_dir, list) {
-                        if (!strcmp(entry->path, full_path)) {
+                        if (!strcmp(dir_entry->path, full_path) || !strncmp(dir_entry->path, dir_path, strlen(dir_path))) {
+                                AUDIT{
+                                pr_info("%s: removing %s from blacklist\n", MODNAME, dir_entry->path);
+                                }
+                                list_del(&dir_entry->list);
+                                kfree(dir_entry->path);
+                                kfree(dir_entry);
+                        }
+                }
+                spin_unlock(&reference_monitor.lock);
+        }
+
+        if (mode == DELETE_ALL) {
+                spin_lock(&reference_monitor.lock);
+                list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist, list) {
+                        if (!strncmp(dir_path, entry->path, strlen(dir_path))) {
+                                AUDIT{
+                                pr_info("%s: removing %s from blacklist\n", MODNAME, entry->path);
+                                }
                                 list_del(&entry->list);
                                 kfree(entry->path);
                                 kfree(entry);
@@ -300,39 +328,95 @@ asmlinkage long sys_remove_path_from_rf(char *path) {
                 spin_unlock(&reference_monitor.lock);
         }
 
-
-        spin_lock(&reference_monitor.lock);
-        list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist, list) {
-                if (!strstr(full_path, entry->path)) {
-                        list_del(&entry->list);
-                        kfree(entry->path);
-                        kfree(entry);
-                }
-        }
-        spin_unlock(&reference_monitor.lock);
-        
         return 0;
 }
 
 
-/* print blacklist */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(1, _print_black_list, int, none) {
+__SYSCALL_DEFINEx(2, _get_blacklist_size, size_t * __user, files_size, size_t * __user, dirs_size) {
 #else
-asmlinkage long sys_print_black_list(void) {
+asmlinkage long sys_get_blacklist_size(void) {
 #endif
 
+        size_t total_files_size = 0;
+        size_t total_dirs_size = 0;
+
+        pr_info("Computing blacklist size\n");
+
         struct blacklist_entry *entry;
-        printk(KERN_INFO "Blacklist contents (files):\n");
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
-                printk(KERN_INFO "path = %s, filename = %s, inode number = %lu\n", entry->path, entry->filename, entry->inode_number);
+                total_files_size += strlen("path = ") + strlen(entry->path) +
+                        strlen(", filename = ") + strlen(entry->filename) +
+                        strlen(", inode number = ") + 20 + // Lunghezza massima dell'inode number (20 caratteri)
+                        3; // +3 per i separatori ", " e il carattere terminatore NULL
         }
 
         struct blacklist_dir_entry *dir_entry;
-        printk(KERN_INFO "Blacklist contents (directories):\n");
         list_for_each_entry(dir_entry, &reference_monitor.blacklist_dir, list) {
-                printk(KERN_INFO "path = %s\n", dir_entry->path);
+                total_dirs_size += strlen("path = ") + strlen(dir_entry->path) + 2; // +2 per i separatori ", " e il carattere terminatore NULL
         }
+
+        if (copy_to_user(files_size, &total_files_size, sizeof(total_files_size)) ||
+            copy_to_user(dirs_size, &total_dirs_size, sizeof(total_dirs_size))) {
+                return -EFAULT;
+        }
+
+        return 0;
+}
+
+/* print blacklist */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
+__SYSCALL_DEFINEx(4, _print_blacklist, char * __user, files, char * __user, dirs, size_t, files_size, size_t, dirs_size) {
+#else
+asmlinkage long sys_print_blacklist(void) {
+#endif
+
+        if (!files || !dirs) {
+                return -EINVAL;
+        }
+
+        char *files_buf = kmalloc(files_size, GFP_KERNEL);
+        char *dirs_buf = kmalloc(dirs_size, GFP_KERNEL);
+
+        if (!files_buf || !dirs_buf) {
+                return -ENOMEM;
+        }
+
+        char *files_ptr = files_buf;
+        char *dirs_ptr = dirs_buf;
+
+        
+        pr_info("Copying files\n");
+        struct blacklist_entry *entry;
+        list_for_each_entry(entry, &reference_monitor.blacklist, list) {
+                files_ptr += snprintf(files_ptr, files_size - (files_ptr - files_buf),
+                                "path = %s, filename = %s, inode number = %lu\n",
+                                entry->path, entry->filename, entry->inode_number);
+        }
+
+        if (copy_to_user(files, files_buf, files_size)) {
+                pr_err("%s: Fault in copying blacklisted files to user\n", MODNAME);
+                return -EFAULT;
+        }
+
+
+
+        pr_info("Copying directories\n");
+        struct blacklist_dir_entry *dir_entry;
+        list_for_each_entry(dir_entry, &reference_monitor.blacklist_dir, list) {
+                dirs_ptr += snprintf(dirs_ptr, dirs_size - (dirs_ptr - dirs_buf),
+                                "path = %s\n", dir_entry->path);
+        }
+
+
+        if (copy_to_user(dirs, dirs_buf, dirs_size)) {
+                pr_err("%s: Fault in copying blacklisted directories to user\n", MODNAME);
+                return -EFAULT;
+        }
+        
+
+        kfree(files_buf);
+        kfree(dirs_buf);
 
         return 0;
 }
@@ -361,7 +445,7 @@ asmlinkage long sys_write_rf_state(int state) {
 
         /* check state number */
         if (state < 0 || state > 3) {
-                printk(KERN_ERR "%s: Unexpected state", MODNAME);
+                pr_err("%s: Unexpected state", MODNAME);
                 return -EINVAL;
         }
 
@@ -369,14 +453,14 @@ asmlinkage long sys_write_rf_state(int state) {
 
         /* check EUID */
         if (!uid_eq(euid, GLOBAL_ROOT_UID)) {
-                printk(KERN_ERR "%s: Access denied: only root (EUID 0) can change the state\n", MODNAME);
+                pr_err("%s: Access denied: only root (EUID 0) can change the state\n", MODNAME);
                 return -EPERM;
         }   
 
         /* if requested state is REC-ON or REC-OFF, check password */
         if (state > 1) {
                 if (strcmp(reference_monitor.password, encrypt_password(password)) != 0) {
-                        printk(KERN_ERR "%s: Access denied: invalid password\n", MODNAME);
+                        pr_err("%s: Access denied: invalid password\n", MODNAME);
                         return -EACCES;
                 }
         }
@@ -418,7 +502,8 @@ long sys_read_state = (unsigned long) __x64_sys_read_rf_state;
 long sys_write_state = (unsigned long) __x64_sys_write_rf_state;    
 long sys_add_to_blacklist = (unsigned long) __x64_sys_add_path_to_rf;
 long sys_remove_from_blacklist = (unsigned long) __x64_sys_remove_path_from_rf;
-long sys_print_blacklist = (unsigned long) __x64_sys_print_black_list;
+long sys_print_blacklist = (unsigned long) __x64_sys_print_blacklist;
+long sys_get_blacklist_size = (unsigned long) __x64_sys_get_blacklist_size;
 #else
 #endif
 
@@ -895,6 +980,7 @@ int initialize_syscalls(void) {
         new_sys_call_array[2] = (unsigned long)sys_add_to_blacklist;
         new_sys_call_array[3] = (unsigned long)sys_remove_from_blacklist;
         new_sys_call_array[4] = (unsigned long)sys_print_blacklist;
+        new_sys_call_array[5] = (unsigned long)sys_get_blacklist_size;
 
         /* get free entries on the syscall table */
         ret = get_entries(restore,HACKED_ENTRIES,(unsigned long*)the_syscall_table,&the_ni_syscall);
