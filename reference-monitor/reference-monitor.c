@@ -512,7 +512,7 @@ long sys_get_blacklist_size = (unsigned long) __x64_sys_get_blacklist_size;
  *  Check if this file is blacklisted
  *  @param filename filename, from which the file's full path is retrieved 
 */
-int is_blacklisted(char *filename) {
+int is_blacklisted(const char *filename) {
         struct blacklist_entry *entry;
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
 
@@ -542,7 +542,7 @@ int is_blacklisted(char *filename) {
  * @param path filename/relative path
  * @param fd file descriptor, from which the full path is retrieved
 */
-int is_blacklisted_fd(char *path, int fd) {
+int is_blacklisted_fd(const char *path, int fd) {
         struct blacklist_entry *entry;
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
 
@@ -570,7 +570,7 @@ int is_blacklisted_fd(char *path, int fd) {
  * a blacklisted directory's path, i.e. it is a subdirectory of a blacklisted directory)
  * @param path directory path
 */
-int is_blacklisted_dir(char *path) {
+int is_blacklisted_dir(const char *path) {
 
         struct blacklist_dir_entry *entry;
         list_for_each_entry(entry, &reference_monitor.blacklist_dir, list) {
@@ -588,7 +588,7 @@ int is_blacklisted_dir(char *path) {
  * @param path full path of the file
  * @param inode_number inode number of the file 
 */
-int is_blacklisted_hl(char *path, unsigned long inode_number) {
+int is_blacklisted_hl(const char *path, unsigned long inode_number) {
 
         struct blacklist_entry *entry;
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
@@ -625,7 +625,7 @@ static void deferred_work(unsigned long data) {
 
         struct file *file = filp_open(LOG_FILE, O_WRONLY, 0644);
         if (IS_ERR(file)) {
-                pr_err("Error in opening log file: %ld\n", PTR_ERR(file));
+                pr_err("Error in opening log file (maybe the VFS is not mounted): %ld\n", PTR_ERR(file));
                 return;
         }
 
@@ -712,7 +712,7 @@ static int do_unlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *re
 
         /* get path and open flags from the registers snapshot */
         struct filename *fn = (struct filename *)regs->si;
-        char *filename = fn->name;
+        const char *filename = fn->name;
 
         int dfd = (int)regs->di;
 
@@ -817,21 +817,30 @@ static int do_renameat2_handler(struct kretprobe_instance *ri, struct pt_regs *r
         char message[200];
 
         struct filename *from = (struct filename *)regs->si;
-        char *path = from->name;
+        const char *path = from->name;
 
-        if (is_blacklisted(path)) {
+        pr_info("%s\n", path);
 
-                /* set message */
-                iop = (struct invalid_operation_data *)ri->data;
-                sprintf(message, "%s [BLOCKED]: Renaming attempt on file %s\n", MODNAME, path);
-                iop->message = kstrdup(message, GFP_KERNEL);
-
-                /* update target file descriptor to an invalid one (-1) */
-                regs->di = -1;
-                return 0;
+        if (is_directory(path)) {
+                char *full_path = get_full_path(path);
+                if (is_blacklisted_dir(full_path)) {
+                        goto block_mv;
+                }
+        } else if (is_blacklisted(path)) {
+                goto block_mv;
         }
-
+        
         return 1;
+
+block_mv:
+        /* set message */
+        iop = (struct invalid_operation_data *)ri->data;
+        sprintf(message, "%s [BLOCKED]: Renaming attempt on file %s\n", MODNAME, path);
+        iop->message = kstrdup(message, GFP_KERNEL);
+
+        /* update target file descriptor to an invalid one (-1) */
+        regs->di = -1;
+        return 0;
 }
 
 
@@ -844,7 +853,7 @@ static int do_linkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs
         char message[200];
 
         struct filename *old = (struct filename *)regs->si;
-        char *path = old->name;
+        const char *path = old->name;
 
         int dfd = (int)regs->di;
 
@@ -885,7 +894,7 @@ static int do_symlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *r
 
         /* get do_symlinkat parameters from registers */
         struct filename *from = (struct filename *)regs->di;
-        char *path = from->name;
+        const char *path = from->name;
 
         if (is_blacklisted(path)) {
 

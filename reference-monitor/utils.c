@@ -27,7 +27,7 @@ char *get_path_from_dentry(struct dentry *dentry) {
         return full_path;
 }
 
-char *get_full_path(char *rel_path) {
+char *get_full_path(const char *rel_path) {
 
         char *k_full_path = NULL;
         struct path path;
@@ -41,7 +41,18 @@ char *get_full_path(char *rel_path) {
 
         ret = kern_path(rel_path, LOOKUP_FOLLOW, &path);
         if (ret == -ENOENT) {
-                ret = kern_path(strcat(rel_path, "~"), LOOKUP_FOLLOW, &path);
+                char *rel_path_tilde = kmalloc(PATH_MAX, GFP_KERNEL);
+                if (!rel_path_tilde) {
+                        pr_err("%s: error in kmalloc (rel_path_tilde)\n", MODNAME);
+                        return NULL; 
+                }
+
+                strcpy(rel_path_tilde, rel_path);
+                strcat(rel_path_tilde, "~");
+
+                ret = kern_path(rel_path_tilde, LOOKUP_FOLLOW, &path);
+
+                kfree(rel_path_tilde);
         }
         if (ret) {
                 pr_err("%s: full path not found (error %d)\n", MODNAME, ret);
@@ -79,7 +90,7 @@ unsigned long retrieve_inode_number(char *path) {
 }
 
 
-int is_directory(char *path) {
+int is_directory(const char *path) {
         struct path p;
         int error;
         struct inode *inode;
@@ -87,6 +98,7 @@ int is_directory(char *path) {
         error = kern_path(path, LOOKUP_FOLLOW, &p);
         if(error) {
                 pr_err("%s: error in kern_path (is_directory)\n", MODNAME);
+                return 0;
         }
         inode = p.dentry->d_inode;
 
@@ -127,7 +139,7 @@ char *get_dir_path_from_fd(int fd) {
         return strcat(path_name, "/");
 }
 
-char *get_full_path_from_fd(int fd, char *filename) {
+char *get_full_path_from_fd(int fd, const char *filename) {
 
         /* get parent directory full path */
         char *dir = get_dir_path_from_fd(fd);
@@ -142,6 +154,28 @@ char *get_full_path_from_fd(int fd, char *filename) {
 }
 
 
+
+static struct file *open_program_file(char *filename) {
+        struct file *file = filp_open(filename, O_RDONLY, 0);
+        if (IS_ERR(file)) {
+
+                /* if path starts with '/root/', replace it with '/' */
+                if (strncmp(filename, "/root", 5) == 0) {
+                        memmove(filename, filename + 5, strlen(filename) - 4);
+                }
+
+                file = filp_open(filename, O_RDONLY, 0);
+
+                if (IS_ERR(file)) {
+                        printk(KERN_ERR "Failed to open file %s\n", filename);
+                        return NULL;
+                }
+        }
+
+        return file;
+}
+
+
 char *calc_fingerprint(char *filename) {
         struct crypto_shash *hash_tfm;
         struct file *file;
@@ -151,54 +185,39 @@ char *calc_fingerprint(char *filename) {
         loff_t pos = 0;
         int ret;
 
-        pr_info("%s: computing hash for %s content\n", MODNAME, filename);
-
-        /* Allocazione del transform hash */
+        /* hash transform allocation */
         hash_tfm = crypto_alloc_shash("sha256", 0, 0);
         if (IS_ERR(hash_tfm)) {
-                printk(KERN_ERR "Failed to allocate hash transform\n");
+                pr_err("Failed to allocate hash transform\n");
                 return NULL;
         }
 
-        /* Apertura del file */
-        file = filp_open(filename, O_RDONLY, 0);
-        if (IS_ERR(file)) {
-
-                /* if path starts with '/root/', replace it with '/' */
-                if (strncmp(filename, "/root", 5) == 0) {
-                        memmove(filename, filename + 5, strlen(filename) - 4);
-                }
-
-                pr_info("%s: path transformed to %s\n", MODNAME, filename);
-
-                file = filp_open(filename, O_RDONLY, 0);
-
-                if (IS_ERR(file)) {
-                        printk(KERN_ERR "Failed to open file %s\n", filename);
-                        crypto_free_shash(hash_tfm);
-                        return NULL;
-                }
+        /* offending program file opening */
+        file = open_program_file(filename);
+        if (!file) {
+                crypto_free_shash(hash_tfm);
+                return NULL;
         }
 
-        /* Allocazione del descrittore hash */
+        /* hash descriptor allocation */
         desc = kmalloc(sizeof(struct shash_desc) + crypto_shash_descsize(hash_tfm), GFP_KERNEL);
         if (!desc) {
-                printk(KERN_ERR "Failed to allocate hash descriptor\n");
+                pr_err("Failed to allocate hash descriptor\n");
                 goto out;
         }
         desc->tfm = hash_tfm;
 
-        /* Allocazione del buffer di digest */
+        /* digest allocation */
         digest = kmalloc(32, GFP_KERNEL);
         if (!digest) {
-                printk(KERN_ERR "Failed to allocate hash buffer\n");
+                pr_err("Failed to allocate hash buffer\n");
                 goto out;
         }
 
-        /* Calcolo dell'hash del contenuto del file */
+        /* hash computation */
         crypto_shash_init(desc);
         while (1) {
-                char buf[PAGE_SIZE];
+                char buf[1024];
                 ret = kernel_read(file, buf, sizeof(buf), &pos);
                 if (ret <= 0)
                 break;
@@ -206,14 +225,13 @@ char *calc_fingerprint(char *filename) {
         }
         crypto_shash_final(desc, digest);
 
-        /* Allocazione della stringa risultato */
+        /* result allocation */
         result = kmalloc(2 * 32 + 1, GFP_KERNEL);
         if (!result) {
-                printk(KERN_ERR "Failed to allocate memory for result\n");
+                pr_err("Failed to allocate memory for result\n");
                 goto out;
         }
 
-        /* Formattazione dell'hash come stringa esadecimale */
         for (int i = 0; i < 32; i++)
                 sprintf(&result[i * 2], "%02x", digest[i]);
                 

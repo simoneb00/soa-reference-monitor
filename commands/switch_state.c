@@ -7,17 +7,48 @@
 
 #include "commands.h"
 
+#define PASSWORD_SIZE 256
+
+void get_password(char password[])
+{
+    static struct termios oldt, newt;
+    int i = 0;
+    int c;
+
+    tcgetattr( STDIN_FILENO, &oldt);
+    newt = oldt;
+
+    newt.c_lflag &= ~(ECHO);          
+
+    tcsetattr( STDIN_FILENO, TCSANOW, &newt);
+
+    while ((c = getchar())!= '\n' && c != EOF && i < PASSWORD_SIZE){
+        password[i++] = c;
+    }
+    password[i] = '\0';
+
+    tcsetattr( STDIN_FILENO, TCSANOW, &oldt);
+
+}
+
 int main(int argc, char *argv[]) {
 
-    if (argc != 2 && argc != 3) {
-        print_error("Usage: switch_state 0/1 or switch state 2/3 password");
-        return 1;
-    } else if (argc == 2 && atoi(argv[1]) >= 2) {
-        print_error("Usage: switch_state state password");
+    char password[PASSWORD_SIZE];
+
+    if (argc != 2) {
+        print_error("Usage: switch_state state");
         return 1;
     }
 
-    long ret = syscall(WRITE_CODE, atoi(argv[1]), argv[2]);
+    int state = atoi(argv[1]);
+
+    if (state > 1) {
+        printf("Enter password: ");
+        get_password(password);
+        puts("");
+    }
+
+    long ret = syscall(WRITE_CODE, atoi(argv[1]), password);
     if (ret < 0) {
         switch (errno)
         {

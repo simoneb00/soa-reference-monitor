@@ -16,8 +16,6 @@ int main() {
         return 1;
     }
 
-    printf("%ld, %ld\n", files_size, dirs_size);
-
     char *files = malloc(files_size);
     char *dirs = malloc(dirs_size);
 

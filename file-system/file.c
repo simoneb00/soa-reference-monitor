@@ -110,39 +110,6 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
 }
 
 
-static ssize_t append_to_file(struct file *filp, const char *buf, size_t count, loff_t *offset) {
-
-    struct buffer_head *bh = NULL;
-    struct inode *the_inode = filp->f_inode;
-    uint64_t file_size = i_size_read(the_inode);
-    loff_t block_offset;
-    int block_to_write;
-
-
-    block_offset = *offset % DEFAULT_BLOCK_SIZE;
-    block_to_write = *offset / DEFAULT_BLOCK_SIZE + 2;  // + superblock + inode
-
-    bh = sb_bread(filp->f_path.dentry->d_inode->i_sb, block_to_write);
-    if (!bh)
-        return -EIO;
-
-    memcpy(bh->b_data + block_offset, buf, count);
-
-    mark_buffer_dirty(bh);
-
-    if (*offset + count > file_size)
-        i_size_write(the_inode, *offset + count);
-
-    brelse(bh);
-
-    *offset += count;
-
-    return count;
-    
-}
-
-
-
 struct dentry *onefilefs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flags) {
 
     struct onefilefs_inode *FS_specific_inode;
