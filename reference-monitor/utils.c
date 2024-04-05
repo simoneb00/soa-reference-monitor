@@ -29,6 +29,10 @@ char *get_path_from_dentry(struct dentry *dentry) {
 
 char *get_full_path(const char *rel_path) {
 
+        if (rel_path[0] == '/') {
+                return rel_path;
+        }
+
         char *k_full_path = NULL;
         struct path path;
         int ret;

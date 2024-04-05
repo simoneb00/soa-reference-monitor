@@ -95,6 +95,19 @@ int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};                  
 */
 int add_dir_to_rm(char *path) {
         struct blacklist_dir_entry *new_entry;
+        int path_len = strlen(path);
+
+        char *new_path = kmalloc(path_len + 2, GFP_KERNEL); // Add '/' at the end
+        if (!new_path) {
+                pr_err("%s: error in kmalloc allocation (add_dir_to_rm)\n", MODNAME);
+                return -ENOMEM;
+        }
+
+        strcpy(new_path, path);
+
+        if (new_path[path_len - 1] != '/') {
+                strcat(new_path, "/");
+        }
 
         new_entry = kmalloc(sizeof(struct blacklist_dir_entry), GFP_KERNEL);
         if (!new_entry) {
@@ -102,7 +115,7 @@ int add_dir_to_rm(char *path) {
                 return -ENOMEM;
         }
 
-        new_entry->path = kstrdup(path, GFP_KERNEL);
+        new_entry->path = kstrdup(new_path, GFP_KERNEL);
         if (!new_entry->path) {
                 kfree(new_entry);
                 pr_err("%s: error in kstrdup (add_dir_to_rm)\n", MODNAME);
@@ -112,6 +125,8 @@ int add_dir_to_rm(char *path) {
         spin_lock(&reference_monitor.lock);
         list_add_tail(&new_entry->list, &reference_monitor.blacklist_dir);
         spin_unlock(&reference_monitor.lock);
+
+        kfree(new_path);
 
         return 0;
 }
@@ -341,19 +356,17 @@ asmlinkage long sys_get_blacklist_size(void) {
         size_t total_files_size = 0;
         size_t total_dirs_size = 0;
 
-        pr_info("Computing blacklist size\n");
-
         struct blacklist_entry *entry;
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
                 total_files_size += strlen("path = ") + strlen(entry->path) +
                         strlen(", filename = ") + strlen(entry->filename) +
-                        strlen(", inode number = ") + 20 + // Lunghezza massima dell'inode number (20 caratteri)
-                        3; // +3 per i separatori ", " e il carattere terminatore NULL
+                        strlen(", inode number = ") + 20 + // Max length of inode numbers (20 chars)
+                        3; // +3 for ", " and NULL terminator
         }
 
         struct blacklist_dir_entry *dir_entry;
         list_for_each_entry(dir_entry, &reference_monitor.blacklist_dir, list) {
-                total_dirs_size += strlen("path = ") + strlen(dir_entry->path) + 2; // +2 per i separatori ", " e il carattere terminatore NULL
+                total_dirs_size += strlen("path = ") + strlen(dir_entry->path) + 2; // +2 for ", " and NULL terminator
         }
 
         if (copy_to_user(files_size, &total_files_size, sizeof(total_files_size)) ||
@@ -386,7 +399,6 @@ asmlinkage long sys_print_blacklist(void) {
         char *dirs_ptr = dirs_buf;
 
         
-        pr_info("Copying files\n");
         struct blacklist_entry *entry;
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
                 files_ptr += snprintf(files_ptr, files_size - (files_ptr - files_buf),
@@ -401,7 +413,6 @@ asmlinkage long sys_print_blacklist(void) {
 
 
 
-        pr_info("Copying directories\n");
         struct blacklist_dir_entry *dir_entry;
         list_for_each_entry(dir_entry, &reference_monitor.blacklist_dir, list) {
                 dirs_ptr += snprintf(dirs_ptr, dirs_size - (dirs_ptr - dirs_buf),
@@ -572,13 +583,33 @@ int is_blacklisted_fd(const char *path, int fd) {
 */
 int is_blacklisted_dir(const char *path) {
 
+        int path_len = strlen(path);
+        char *new_path;
+
+        /* add / at the end of the path */
+        if (path[path_len - 1] != '/') {
+                new_path = kmalloc(strlen(path) + 2, GFP_KERNEL);
+                if (!new_path) {
+                        pr_err("%s: error in kmalloc allocation (is_blacklisted_dir)\n", MODNAME);
+                        return 0;
+                }
+
+                strcpy(new_path, path);
+                strcat(new_path, "/");
+
+        } else {
+                new_path = path;
+        }
+
         struct blacklist_dir_entry *entry;
         list_for_each_entry(entry, &reference_monitor.blacklist_dir, list) {
-                if (strstr(path, entry->path) != NULL) {
+                if (!strncmp(new_path, entry->path, strlen(entry->path))) {
+                        kfree(new_path);
                         return 1;
                 }
         }
 
+        kfree(new_path);
         return 0;
 }
 
@@ -819,14 +850,13 @@ static int do_renameat2_handler(struct kretprobe_instance *ri, struct pt_regs *r
         struct filename *from = (struct filename *)regs->si;
         const char *path = from->name;
 
-        pr_info("%s\n", path);
+        char *full_path = get_full_path(path);
+        if (!full_path) {
+                pr_err("Error in getting full path for %s\n", path);
+                return 1;
+        }
 
-        if (is_directory(path)) {
-                char *full_path = get_full_path(path);
-                if (is_blacklisted_dir(full_path)) {
-                        goto block_mv;
-                }
-        } else if (is_blacklisted(path)) {
+        if (is_blacklisted_dir(full_path) || is_blacklisted(full_path)) {
                 goto block_mv;
         }
         
@@ -867,6 +897,17 @@ static int do_linkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs
                 } 
         }
 
+        /* check directory */
+        char *full_path = get_full_path(path);
+        if (!full_path) {
+                pr_err("Error in getting full path for %s\n", path);
+                return 1;
+        }
+
+        if (is_blacklisted_dir(full_path)) {
+                goto hlink_block;
+        }
+
         return 1;
 
 hlink_block:
@@ -897,18 +938,31 @@ static int do_symlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *r
         const char *path = from->name;
 
         if (is_blacklisted(path)) {
+                goto symlink_block;
+        }
 
-                /* set message */
-                iop = (struct invalid_operation_data *)ri->data;
-                sprintf(message, "%s [BLOCKED]: Symlink creation on file %s\n", MODNAME, path);
-                iop->message = kstrdup(message, GFP_KERNEL);
+        /* check directory */
+        char *full_path = get_full_path(path);
+        if (!full_path) {
+                pr_err("Error in getting full path for %s\n", path);
+                return 1;
+        }
 
-                /* update new file's descriptor to an invalid one (-1) */
-                regs->si = -1;
-                return 0;
+        if (is_blacklisted_dir(full_path)) {
+                goto symlink_block;
         }
 
         return 1;
+
+symlink_block:
+        /* set message */
+        iop = (struct invalid_operation_data *)ri->data;
+        sprintf(message, "%s [BLOCKED]: Symlink creation on file %s\n", MODNAME, path);
+        iop->message = kstrdup(message, GFP_KERNEL);
+
+        /* update new file's descriptor to an invalid one (-1) */
+        regs->si = -1;
+        return 0;
 }
 
 /**
