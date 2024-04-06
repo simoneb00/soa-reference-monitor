@@ -583,22 +583,30 @@ int is_blacklisted_fd(const char *path, int fd) {
 */
 int is_blacklisted_dir(const char *path) {
 
-        int path_len = strlen(path);
+        char *full_path = get_full_path(path);
+        if (!full_path) {
+                /* if an error occurred during get_full_path execution, or
+                   the full path cannot be found (this seems to happen for files 
+                   whose name is hashed, when accessing them), return 0 (not blacklisted) */
+                return 0;
+        }
+
+        int path_len = strlen(full_path);
         char *new_path;
 
         /* add / at the end of the path */
-        if (path[path_len - 1] != '/') {
-                new_path = kmalloc(strlen(path) + 2, GFP_KERNEL);
+        if (full_path[path_len - 1] != '/') {
+                new_path = kmalloc(strlen(full_path) + 2, GFP_KERNEL);
                 if (!new_path) {
                         pr_err("%s: error in kmalloc allocation (is_blacklisted_dir)\n", MODNAME);
                         return 0;
                 }
 
-                strcpy(new_path, path);
+                strcpy(new_path, full_path);
                 strcat(new_path, "/");
 
         } else {
-                new_path = path;
+                new_path = full_path;
         }
 
         struct blacklist_dir_entry *entry;
@@ -828,6 +836,7 @@ static int blacklisted_directory_update_handler(struct kretprobe_instance *ri, s
         char *full_path = get_path_from_dentry(dentry);
 
         if (is_blacklisted_dir(full_path)) {
+
                 /* set message */
                 iop = (struct invalid_operation_data *)ri->data;
                 sprintf(message, "%s [BLOCKED]: File/subdirectory creation in blacklisted directory %s\n", MODNAME, kbasename(full_path));
@@ -850,13 +859,7 @@ static int do_renameat2_handler(struct kretprobe_instance *ri, struct pt_regs *r
         struct filename *from = (struct filename *)regs->si;
         const char *path = from->name;
 
-        char *full_path = get_full_path(path);
-        if (!full_path) {
-                pr_err("Error in getting full path for %s\n", path);
-                return 1;
-        }
-
-        if (is_blacklisted_dir(full_path) || is_blacklisted(full_path)) {
+        if (is_blacklisted_dir(path) || is_blacklisted(path)) {
                 goto block_mv;
         }
         
@@ -897,17 +900,6 @@ static int do_linkat_handler(struct kretprobe_instance *ri, struct pt_regs *regs
                 } 
         }
 
-        /* check directory */
-        char *full_path = get_full_path(path);
-        if (!full_path) {
-                pr_err("Error in getting full path for %s\n", path);
-                return 1;
-        }
-
-        if (is_blacklisted_dir(full_path)) {
-                goto hlink_block;
-        }
-
         return 1;
 
 hlink_block:
@@ -937,18 +929,7 @@ static int do_symlinkat_handler(struct kretprobe_instance *ri, struct pt_regs *r
         struct filename *from = (struct filename *)regs->di;
         const char *path = from->name;
 
-        if (is_blacklisted(path)) {
-                goto symlink_block;
-        }
-
-        /* check directory */
-        char *full_path = get_full_path(path);
-        if (!full_path) {
-                pr_err("Error in getting full path for %s\n", path);
-                return 1;
-        }
-
-        if (is_blacklisted_dir(full_path)) {
+        if (is_blacklisted(path) || is_blacklisted_dir(path)) {
                 goto symlink_block;
         }
 

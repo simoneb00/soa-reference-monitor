@@ -7,14 +7,15 @@ all:
 	gcc reference-monitor/user/user.c -o user
 
 clean:
-	$(MAKE) $(PWD)/syscall-table-discoverer clean
-	$(MAKE) $(PWD)/reference-monitor clean
-	$(MAKE) $(PWD)/file-system clean
+	$(MAKE) syscall-table-discoverer/ clean
+	$(MAKE) reference-monitor/ clean
+	$(MAKE) file-system/ clean
 
 mount: 
-	$(MAKE) syscall-table-discoverer mount
-	$(MAKE) reference-monitor mount
-	$(MAKE) file-system mount-fs
+	$(MAKE) syscall-table-discoverer/ mount
+	$(MAKE) reference-monitor/ mount
+	$(MAKE) file-system/ mount-fs
+	$(MAKE) commands/ install
 
 unmount:
 	rmmod the_usctm
