@@ -8,6 +8,7 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/version.h>
+#include <linux/uio.h>
 
 #include "file-system.h"
 
@@ -64,6 +65,7 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
     loff_t block_offset;
     int block_to_write;
     struct buffer_head *bh = NULL;
+    size_t copied_bytes;
 
     /* byte size of the payload */
     size_t count = from->count;
@@ -74,7 +76,7 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
         return 0;
     }
 
-    size_t copied_bytes = _copy_from_iter((void *)data, count, from);
+    copied_bytes = _copy_from_iter((void *)data, count, from);
     if (copied_bytes != count) {
         pr_err("%s: failed to copy %ld bytes from iov_iter\n", MOD_NAME, count);
         return 0;

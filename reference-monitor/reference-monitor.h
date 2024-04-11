@@ -11,30 +11,6 @@
 char *encrypt_password(const char *password);
 int add_directory_to_rf(struct file *dir, char *dir_name);
 
-struct nameidata {
-	struct path	path;
-	struct qstr	last;
-	struct path	root;
-	struct inode	*inode; /* path.dentry.d_inode */
-	unsigned int	flags, state;
-	unsigned	seq, next_seq, m_seq, r_seq;
-	int		last_type;
-	unsigned	depth;
-	int		total_link_count;
-	struct saved {
-		struct path link;
-		struct delayed_call done;
-		const char *name;
-		unsigned seq;
-	} *stack, internal[2];
-	struct filename	*name;
-	struct nameidata *saved;
-	unsigned	root_seq;
-	int		dfd;
-	vfsuid_t	dir_vfsuid;
-	umode_t		dir_mode;
-};
-
 struct open_flags {
 	int open_flag;
 	umode_t mode;

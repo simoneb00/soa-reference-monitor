@@ -67,13 +67,14 @@ static struct kretprobe vfs_link_retprobe;
 static struct kretprobe security_inode_mkdir_retprobe;
 static struct kretprobe security_inode_create_retprobe;
 
+static spinlock_t lock;
+
 /* kretprobes array */
 struct kretprobe **rps;     
 
 /* reference monitor struct */
 struct reference_monitor reference_monitor;    
 
-// TODO sistema gestione password
 /* reference monitor password, to be checked when switching to states REC-ON and REC-OFF */
 char password[PASSW_LEN];
 module_param_string(password, password, PASSW_LEN, 0);
@@ -178,9 +179,13 @@ int add_file_to_rf(char *path, char *rel_path) {
  * the same function is recursively called; otherwise (i.e., the sub-element is a file), the file is added to the 
  * blacklist 
 */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
 static bool process_dir_entry(struct dir_context *dir, const char *name, int name_len,
                         loff_t offset, u64 ino, unsigned int d_type) {
-
+#else 
+static int process_dir_entry(struct dir_context *dir, const char *name, int name_len,
+                        loff_t offset, u64 ino, unsigned int d_type) {
+#endif
         struct custom_dir_context *custom_ctx;
         char *full_path, *file_name;
         struct file *subdir;
@@ -234,7 +239,11 @@ static bool process_dir_entry(struct dir_context *dir, const char *name, int nam
         kfree(full_path);
         kfree(file_name);
 
+	#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
         return true;
+	#else
+	return 1;
+	#endif
 
 }
 
@@ -319,10 +328,9 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
         }
 
         if (is_directory(full_path)) {
-
                 dir_path = add_trailing_slash(full_path);
 
-                /* delete directory from directories black list */
+                /* delete directory from directories blacklist */
                 spin_lock(&reference_monitor.lock);
                 list_for_each_entry_safe(dir_entry, dir_temp, &reference_monitor.blacklist_dir, list) {
                         if (!strcmp(dir_entry->path, full_path) || !strncmp(dir_entry->path, dir_path, strlen(dir_path))) {
@@ -332,7 +340,7 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
                                 list_del(&dir_entry->list);
                                 kfree(dir_entry->path);
                                 kfree(dir_entry);
-                        }
+                      	 }
                 }
                 spin_unlock(&reference_monitor.lock);
         }
@@ -352,6 +360,9 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
                 spin_unlock(&reference_monitor.lock);
         }
 
+	kfree(full_path);
+	if (!dir_path)
+		kfree(dir_path);
         return 0;
 }
 
@@ -463,6 +474,7 @@ asmlinkage long sys_write_rf_state(int state) {
 #endif 
 
         kuid_t euid;
+	int i;
 
         /* check state number */
         if (state < 0 || state > 3) {
@@ -498,14 +510,14 @@ asmlinkage long sys_write_rf_state(int state) {
 
         /* enable/disable monitor */
         if (state == 1 || state == 3) {
-                for (int i = 0; i < NUM_KRETPROBES; i++) {
+                for (i = 0; i < NUM_KRETPROBES; i++) {
                         enable_kretprobe(rps[i]);
                 }
                 AUDIT {
                 pr_info("%s: kretprobes enabled\n", MODNAME);
                 }
         } else {
-                for (int i = 0; i < NUM_KRETPROBES; i++) {
+                for (i = 0; i < NUM_KRETPROBES; i++) {
                         disable_kretprobe(rps[i]);
                 }
                 AUDIT {
@@ -1075,8 +1087,15 @@ int init_module(void) {
         INIT_LIST_HEAD(&reference_monitor.blacklist_dir);
         
         /* spinlock setup */
+	#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
         DEFINE_SPINLOCK(lock);
+	#else
+	pr_info("Initializing spinlock\n");
+	spin_lock_init(&lock);
+	#endif
         reference_monitor.lock = lock;
+
+	pr_info("Spinlock initialized\n");
 
         /* password setup */
         enc_password = encrypt_password(password); 
@@ -1108,7 +1127,7 @@ void cleanup_module(void) {
 
         /* kretprobes unregistration*/
         AUDIT{
-        for (int i = 0; i < NUM_KRETPROBES; i++) {
+        for (i = 0; i < NUM_KRETPROBES; i++) {
                 printk(KERN_INFO "Missed probing %d instances of %s\n", rps[i]->nmissed, rps[i]->kp.symbol_name);
         }
         }

@@ -14,11 +14,13 @@
 
 char *get_path_from_dentry(struct dentry *dentry) {
 
-        char *buffer = (char *)__get_free_page(GFP_KERNEL);
+	char *buffer, *full_path;
+
+        buffer = (char *)__get_free_page(GFP_KERNEL);
         if (!buffer)
                 return NULL;
 
-        char *full_path = dentry_path_raw(dentry, buffer, PATH_MAX);
+        full_path = dentry_path_raw(dentry, buffer, PATH_MAX);
         if (IS_ERR(full_path)) {
                 pr_err("dentry_path_raw failed: %li", PTR_ERR(full_path));
         } 
@@ -29,13 +31,14 @@ char *get_path_from_dentry(struct dentry *dentry) {
 
 char *get_full_path(const char *rel_path) {
 
+	char *k_full_path, *rel_path_tilde, *tilde_pos;
+	struct path path;
+	int ret;
+
         if (rel_path[0] == '/') {
                 return (char *)rel_path;
         }
 
-        char *k_full_path = NULL;
-        struct path path;
-        int ret;
 
         k_full_path = kmalloc(PATH_MAX, GFP_KERNEL);
         if (!k_full_path) {
@@ -45,7 +48,7 @@ char *get_full_path(const char *rel_path) {
 
         ret = kern_path(rel_path, LOOKUP_FOLLOW, &path);
         if (ret == -ENOENT) {
-                char *rel_path_tilde = kmalloc(PATH_MAX, GFP_KERNEL);
+                rel_path_tilde = kmalloc(PATH_MAX, GFP_KERNEL);
                 if (!rel_path_tilde) {
                         pr_err("%s: error in kmalloc (rel_path_tilde)\n", MODNAME);
                         return NULL; 
@@ -69,7 +72,7 @@ char *get_full_path(const char *rel_path) {
                 pr_err("%s: full path is too long\n", MODNAME);
         }
 
-        char *tilde_pos = strrchr(k_full_path, '~');
+        tilde_pos = strrchr(k_full_path, '~');
         if (tilde_pos != NULL) {
                 *tilde_pos = '\0'; 
         }
@@ -115,6 +118,8 @@ char *get_dir_path_from_fd(int fd) {
         struct file *file;
         char *buffer, *path_name;
         int ret;
+	struct path p;
+	struct dentry *d;
 
         file = fget(fd);
         if (!file) {
@@ -122,8 +127,8 @@ char *get_dir_path_from_fd(int fd) {
                 return NULL;
         }
 
-        struct path p = file->f_path;
-        struct dentry *d = p.dentry;
+        p = file->f_path;
+        d = p.dentry;
 
         buffer = (char *)__get_free_page(GFP_KERNEL);
         if (!buffer)
@@ -145,22 +150,27 @@ char *get_dir_path_from_fd(int fd) {
 
 char *get_full_path_from_fd(int fd, const char *filename) {
 
+	char *dir, *full_path;
+
         /* get parent directory full path */
-        char *dir = get_dir_path_from_fd(fd);
+        dir = get_dir_path_from_fd(fd);
         if (!dir) {
                 pr_err("%s: failed to get dir path\n", MODNAME);
                 return NULL;
         }
 
         /* concatenate parent directory and filename */
-        char *full_path = strcat(dir, filename);
+        full_path = strcat(dir, filename);
         return full_path;
 }
 
 
 
 static struct file *open_program_file(char *filename) {
-        struct file *file = filp_open(filename, O_RDONLY, 0);
+        
+	struct file *file;
+	
+	file = filp_open(filename, O_RDONLY, 0);
         if (IS_ERR(file)) {
 
                 /* if path starts with '/root/', replace it with '/' */
@@ -187,7 +197,7 @@ char *calc_fingerprint(char *filename) {
         unsigned char *digest;
         char *result = NULL;
         loff_t pos = 0;
-        int ret;
+        int ret, i;
 
         /* hash transform allocation */
         hash_tfm = crypto_alloc_shash("sha256", 0, 0);
@@ -236,7 +246,7 @@ char *calc_fingerprint(char *filename) {
                 goto out;
         }
 
-        for (int i = 0; i < 32; i++)
+        for (i = 0; i < 32; i++)
                 sprintf(&result[i * 2], "%02x", digest[i]);
                 
 out:
@@ -264,6 +274,7 @@ char *encrypt_password(const char *password) {
         unsigned char *digest;
         char *result = NULL;
         int ret = -ENOMEM;
+	int i;
 
         /* hash transform allocation */
         hash_tfm = crypto_alloc_shash("sha256", 0, 0);
@@ -302,7 +313,7 @@ char *encrypt_password(const char *password) {
         }
 
         /* printing result */
-        for (int i = 0; i < 32; i++)
+        for (i = 0; i < 32; i++)
                 sprintf(&result[i * 2], "%02x", digest[i]);
         
 out:
@@ -319,18 +330,22 @@ out:
 
 
 char *add_trailing_slash(char *input) {
-    size_t len = strlen(input);
-    char *result = kmalloc(len + 2, GFP_KERNEL); 
+    
+	size_t len;
+	char *result;
 
-    if (result == NULL) {
-        pr_err("Errore di allocazione di memoria\n");
-        return NULL;
-    }
+  	len = strlen(input);
+    	result = kmalloc(len + 2, GFP_KERNEL); 
 
-    strcpy(result, input); 
-    result[len] = '/';      
-    result[len + 1] = '\0'; 
+    	if (result == NULL) {
+        	pr_err("Errore di allocazione di memoria\n");
+        	return NULL;
+    	}
 
-    return result;
+    	strcpy(result, input); 
+    	result[len] = '/';      
+    	result[len + 1] = '\0'; 
+
+    	return result;
 }
 
