@@ -9,7 +9,7 @@
 int main(int argc, char *argv[]) {
 
     if (argc != 3) {
-        printf("Usage: add_to_blacklist file mode\n");
+        printf("Usage: remove_from_blacklist file mode\n");
         return 1;
     }
 

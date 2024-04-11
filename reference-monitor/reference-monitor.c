@@ -199,6 +199,8 @@ static int process_dir_entry(struct dir_context *dir, const char *name, int name
         }
         strcpy(full_path, custom_ctx->dir_path);
 
+        pr_info("adding file %s\n", full_path);
+
         /* get file/subdirectory name */
         file_name = kmalloc(name_len + 1, GFP_KERNEL);
         if (!file_name) {
@@ -242,7 +244,7 @@ static int process_dir_entry(struct dir_context *dir, const char *name, int name
 	#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,1,0)
         return true;
 	#else
-	return 1;
+	return 0;
 	#endif
 
 }
@@ -476,6 +478,8 @@ asmlinkage long sys_write_rf_state(int state) {
         kuid_t euid;
 	int i;
 
+        pr_info("Writing state");
+
         /* check state number */
         if (state < 0 || state > 3) {
                 pr_err("%s: Unexpected state", MODNAME);
@@ -638,8 +642,9 @@ int is_blacklisted_dir(const char *path) {
                 new_path = full_path;
         }
 
+
         list_for_each_entry(entry, &reference_monitor.blacklist_dir, list) {
-                if (!strncmp(new_path, entry->path, strlen(entry->path))) {
+                if (strncmp(new_path, entry->path, strlen(entry->path))) {
                         kfree(new_path);
                         return 1;
                 }
@@ -791,7 +796,12 @@ static int may_delete_handler(struct kretprobe_instance *ri, struct pt_regs *reg
         char *full_path;
 
         /* get victim's dentry from parameters */
+
+        #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,12,0)
         dentry = (struct dentry *)regs->dx;
+        #else
+        dentry = (struct dentry *)regs->si;
+        #endif
 
         /* get full path from dentry */
         full_path = get_path_from_dentry(dentry);
@@ -1125,7 +1135,7 @@ void cleanup_module(void) {
 	protect_memory();
         printk("%s: sys-call table restored to its original content\n",MODNAME);
 
-        /* kretprobes unregistration*/
+        /* kretprobes unregistration */
         AUDIT{
         for (i = 0; i < NUM_KRETPROBES; i++) {
                 printk(KERN_INFO "Missed probing %d instances of %s\n", rps[i]->nmissed, rps[i]->kp.symbol_name);

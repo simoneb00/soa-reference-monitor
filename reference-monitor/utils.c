@@ -23,9 +23,12 @@ char *get_path_from_dentry(struct dentry *dentry) {
         full_path = dentry_path_raw(dentry, buffer, PATH_MAX);
         if (IS_ERR(full_path)) {
                 pr_err("dentry_path_raw failed: %li", PTR_ERR(full_path));
+                free_page((unsigned long)buffer);
+                return NULL;
         } 
-        free_page((unsigned long)buffer);
 
+
+        free_page((unsigned long)buffer);
         return full_path;
 }
 

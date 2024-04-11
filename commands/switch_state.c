@@ -48,6 +48,7 @@ int main(int argc, char *argv[]) {
         puts("");
     }
 
+
     long ret = syscall(WRITE_CODE, atoi(argv[1]), password);
     if (ret < 0) {
         switch (errno)
