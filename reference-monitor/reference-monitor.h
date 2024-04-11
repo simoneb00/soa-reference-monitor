@@ -2,7 +2,7 @@
 #define LOG_FILE "/mnt/ref-monitor-fs/ref-monitor-log.txt"
 #define PASSW_LEN 32
 #define AUDIT if(1)
-#define NUM_KRETPROBES 7
+#define NUM_KRETPROBES 6
 
 /* syscall remove from blacklist modes */
 #define DELETE_DIRS_ONLY 0		// remove only directory and eventual subdirectories

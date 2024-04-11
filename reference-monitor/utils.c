@@ -59,7 +59,7 @@ char *get_full_path(const char *rel_path) {
                 kfree(rel_path_tilde);
         }
         if (ret) {
-                pr_err("%s: full path not found (error %d) for file %s\n", MODNAME, ret, rel_path);
+                pr_info("%s: full path not found (error %d) for file %s\n", MODNAME, ret, rel_path);
                 return NULL;
         }
 
