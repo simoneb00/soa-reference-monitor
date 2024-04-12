@@ -16,8 +16,14 @@ fi
 echo "creating testing directories/subdirectories/files (if not existing)"
 if [ ! -d "test" ]; then
     mkdir test
+fi
+if [ ! -f "test/test.txt" ]; then
     touch test/test.txt
+fi
+if [ ! -d "test/test1" ]; then
     mkdir test/test1
+fi
+if [ ! -f "test/test1/test.txt" ]; then
     touch test/test1/test.txt
 fi
 
@@ -35,6 +41,9 @@ echo ""
 echo "Adding test/ and test.txt to the blacklist"
 add_to_blacklist test
 add_to_blacklist test.txt
+echo ""
+
+print_blacklist
 echo ""
 
 # try to write on blacklisted file
