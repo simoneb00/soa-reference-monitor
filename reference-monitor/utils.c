@@ -66,6 +66,7 @@ char *get_full_path(const char *rel_path) {
         }
         if (ret) {
                 pr_info("%s: full path not found (error %d) for file %s\n", MODNAME, ret, rel_path);
+                kfree(k_full_path);
                 return NULL;
         }
 
