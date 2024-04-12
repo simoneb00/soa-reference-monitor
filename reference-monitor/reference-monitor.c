@@ -330,6 +330,7 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
         }
 
         if (is_directory(path)) {
+
                 dir = filp_open(path, O_RDONLY, 0);
                 if (IS_ERR(dir)) {
                         pr_err("%s: error in opening file %s\n", MODNAME, path);
@@ -342,10 +343,10 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
                 filp_close(dir, NULL);
 
         } else {
+
                 add_file_to_rf(path, rel_path);
         }
 
-        kfree(path);
         return 0;
 }
 
