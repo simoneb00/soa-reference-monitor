@@ -425,7 +425,6 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
                 spin_unlock(&reference_monitor.lock);
         }
 
-	kfree(full_path);
         return 0;
 }
 
