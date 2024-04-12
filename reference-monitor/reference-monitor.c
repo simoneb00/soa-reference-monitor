@@ -50,6 +50,7 @@
 #include <linux/dcache.h>
 #include <linux/fs_struct.h>
 #include <linux/path.h>
+#include <linux/proc_fs.h>
 
 #include "lib/include/scth.h"
 #include "reference-monitor.h"
@@ -67,8 +68,6 @@ static struct kretprobe vfs_link_retprobe;
 static struct kretprobe security_inode_mkdir_retprobe;
 static struct kretprobe security_inode_create_retprobe;
 
-static spinlock_t lock;
-
 /* kretprobes array */
 struct kretprobe **rps;     
 
@@ -84,9 +83,45 @@ unsigned long the_syscall_table = 0x0;
 module_param(the_syscall_table, ulong, 0660);
 
 unsigned long the_ni_syscall;
-unsigned long new_sys_call_array[] = {0x0, 0x0, 0x0, 0x0, 0x0, 0x0};                 /* new syscalls addresses array */
+unsigned long new_sys_call_array[] = {0x0, 0x0, 0x0, 0x0, 0x0};                      /* new syscalls addresses array */
 #define HACKED_ENTRIES (int)(sizeof(new_sys_call_array)/sizeof(unsigned long))       /* number of entries to be hacked */
 int restore[HACKED_ENTRIES] = {[0 ... (HACKED_ENTRIES-1)] -1};                       /* array of free entries on the syscall table */
+
+/* syscall codes */
+int switch_state;
+int add_to_blacklist;
+int rm_from_blacklist;
+int print_blacklist;
+int get_blacklist_size;
+
+/* read operation for pseudofile containing syscall codes (in /proc) */
+static ssize_t read_proc(struct file *filp, char __user *buffer, size_t length, loff_t *offset) {
+    char proc_buffer[1024];
+    int proc_buffer_len;
+
+    proc_buffer_len = snprintf(proc_buffer, sizeof(proc_buffer),
+                                "switch_state: %d\n"
+                                "add_to_blacklist: %d\n"
+                                "remove_from_blacklist: %d\n"
+                                "print_blacklist: %d\n"
+                                "get_blacklist_size: %d\n",
+                                switch_state, add_to_blacklist,
+                                rm_from_blacklist, print_blacklist, get_blacklist_size);
+
+    if (*offset > 0 || length < proc_buffer_len)
+        return 0;
+
+    if (copy_to_user(buffer, proc_buffer, proc_buffer_len))
+        return -EFAULT;
+
+    *offset += proc_buffer_len;
+    return proc_buffer_len;
+}
+
+/* proc operations */
+static const struct proc_ops proc_fops = {
+    .proc_read = read_proc,
+};
 
 
 /**
@@ -324,12 +359,20 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
                 return -EINVAL;
         }
 
+        pr_info("Getting full path for %s\n", path);
+
         full_path = get_full_path(path);
         if (!full_path) {
                 return -ENOENT;
         }
 
-        if (is_directory(full_path)) {
+
+        int is_dir = is_directory(full_path);
+
+        if (is_dir) {
+
+                pr_info("%s is a directory\n", full_path);
+
                 dir_path = add_trailing_slash(full_path);
 
                 /* delete directory from directories blacklist */
@@ -345,12 +388,28 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
                       	 }
                 }
                 spin_unlock(&reference_monitor.lock);
-        }
+        
+                if (mode == DELETE_ALL) {
+                        spin_lock(&reference_monitor.lock);
+                        list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist, list) {
+                                if (!strncmp(dir_path, entry->path, strlen(dir_path))) {
+                                        AUDIT{
+                                        pr_info("%s: removing %s from blacklist\n", MODNAME, entry->path);
+                                        }
+                                        list_del(&entry->list);
+                                        kfree(entry->path);
+                                        kfree(entry);
+                                }
+                        }
+                        spin_unlock(&reference_monitor.lock);
+                }
 
-        if (mode == DELETE_ALL) {
+                kfree(dir_path);
+        } else {
+                /* if the target is a file, mode is ignored */
                 spin_lock(&reference_monitor.lock);
                 list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist, list) {
-                        if (!strncmp(dir_path, entry->path, strlen(dir_path))) {
+                        if (!strcmp(full_path, entry->path)) {
                                 AUDIT{
                                 pr_info("%s: removing %s from blacklist\n", MODNAME, entry->path);
                                 }
@@ -363,8 +422,6 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
         }
 
 	kfree(full_path);
-	if (!dir_path)
-		kfree(dir_path);
         return 0;
 }
 
@@ -453,21 +510,6 @@ asmlinkage long sys_print_blacklist(void) {
         return 0;
 }
 
-
-/* read state syscall */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-__SYSCALL_DEFINEx(1, _read_rf_state, int, none) {
-#else
-asmlinkage long sys_read_rf_state(void) {
-#endif
-        AUDIT {
-        printk("%s: The state is %d\n", MODNAME, reference_monitor.state);
-        }
-	return reference_monitor.state;
-	
-}
-
-
 /* update state syscall */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0) 
 __SYSCALL_DEFINEx(2, _write_rf_state, int, state, char*, password) {
@@ -535,7 +577,6 @@ asmlinkage long sys_write_rf_state(int state) {
 
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0)
-long sys_read_state = (unsigned long) __x64_sys_read_rf_state;   
 long sys_write_state = (unsigned long) __x64_sys_write_rf_state;    
 long sys_add_to_blacklist = (unsigned long) __x64_sys_add_path_to_rf;
 long sys_remove_from_blacklist = (unsigned long) __x64_sys_remove_path_from_rf;
@@ -644,7 +685,7 @@ int is_blacklisted_dir(const char *path) {
 
 
         list_for_each_entry(entry, &reference_monitor.blacklist_dir, list) {
-                if (strncmp(new_path, entry->path, strlen(entry->path))) {
+                if (!strncmp(new_path, entry->path, strlen(entry->path))) {
                         kfree(new_path);
                         return 1;
                 }
@@ -1043,12 +1084,11 @@ int initialize_syscalls(void) {
      	   printk("%s: initializing - hacked entries %d\n",MODNAME,HACKED_ENTRIES);
 	}
 
-	new_sys_call_array[0] = (unsigned long)sys_read_state; 
-        new_sys_call_array[1] = (unsigned long)sys_write_state;
-        new_sys_call_array[2] = (unsigned long)sys_add_to_blacklist;
-        new_sys_call_array[3] = (unsigned long)sys_remove_from_blacklist;
-        new_sys_call_array[4] = (unsigned long)sys_print_blacklist;
-        new_sys_call_array[5] = (unsigned long)sys_get_blacklist_size;
+        new_sys_call_array[0] = (unsigned long)sys_write_state;
+        new_sys_call_array[1] = (unsigned long)sys_add_to_blacklist;
+        new_sys_call_array[2] = (unsigned long)sys_remove_from_blacklist;
+        new_sys_call_array[3] = (unsigned long)sys_print_blacklist;
+        new_sys_call_array[4] = (unsigned long)sys_get_blacklist_size;
 
         /* get free entries on the syscall table */
         ret = get_entries(restore,HACKED_ENTRIES,(unsigned long*)the_syscall_table,&the_ni_syscall);
@@ -1071,6 +1111,13 @@ int initialize_syscalls(void) {
         printk("%s: all new system-calls correctly installed on sys-call table\n",MODNAME);
         }
 
+        /* set syscall codes */
+        switch_state = restore[0];
+        add_to_blacklist = restore[1];
+        rm_from_blacklist = restore[2];
+        print_blacklist = restore[3];
+        get_blacklist_size = restore[4];
+
         return 0;
 }
 
@@ -1086,6 +1133,9 @@ int init_module(void) {
                 return ret;
         }
 
+        /* /proc file setup (syscall codes) */
+        proc_create(PROC_FILENAME, 0, NULL, &proc_fops);
+
         /* reference monitor initialization */
         AUDIT {
         printk("%s: setting initial state to OFF (0)\n", MODNAME);
@@ -1097,12 +1147,7 @@ int init_module(void) {
         INIT_LIST_HEAD(&reference_monitor.blacklist_dir);
         
         /* spinlock setup */
-	#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
         DEFINE_SPINLOCK(lock);
-	#else
-	pr_info("Initializing spinlock\n");
-	spin_lock_init(&lock);
-	#endif
         reference_monitor.lock = lock;
 
 	pr_info("Spinlock initialized\n");
@@ -1134,6 +1179,9 @@ void cleanup_module(void) {
         }
 	protect_memory();
         printk("%s: sys-call table restored to its original content\n",MODNAME);
+
+        /* remove /proc file */
+        remove_proc_entry(PROC_FILENAME, NULL);
 
         /* kretprobes unregistration */
         AUDIT{

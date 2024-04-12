@@ -2,7 +2,7 @@
 #include <fcntl.h>
 
 
-int main(int argc, char** argv){
+int main(void){
 
     int ret = open("test/test1/test1.txt", O_WRONLY);
     if (ret < 0) {

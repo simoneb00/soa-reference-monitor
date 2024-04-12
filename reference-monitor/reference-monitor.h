@@ -3,6 +3,7 @@
 #define PASSW_LEN 32
 #define AUDIT if(1)
 #define NUM_KRETPROBES 6
+#define PROC_FILENAME "syscall_codes"
 
 /* syscall remove from blacklist modes */
 #define DELETE_DIRS_ONLY 0		// remove only directory and eventual subdirectories

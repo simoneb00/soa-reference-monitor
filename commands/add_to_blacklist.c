@@ -8,12 +8,21 @@
 
 int main(int argc, char *argv[]) {
 
+    long ret;
+    int code;
+
     if (argc != 2) {
         printf("Usage: add_to_blacklist file\n");
         return 1;
     }
 
-    long ret = syscall(ADD_TO_BLACKLIST, argv[1]);
+    code = get_syscall_code("add_to_blacklist");
+    if (code == -1) {
+        printf("Cannot get code for add_to_blacklist\n");
+        return 1;
+    }
+
+    ret = syscall(code, argv[1]);
     if (ret < 0) {
         switch(errno) {
             case EPERM:
@@ -27,6 +36,8 @@ int main(int argc, char *argv[]) {
                 return 1;
         }
     }
+
+    printf("File successfully added to blacklist\n");
     
     return 0;
 }

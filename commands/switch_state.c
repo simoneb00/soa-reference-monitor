@@ -33,6 +33,8 @@ void get_password(char password[])
 
 int main(int argc, char *argv[]) {
 
+    long ret;
+    int state, code;
     char password[PASSWORD_SIZE];
 
     if (argc != 2) {
@@ -40,16 +42,21 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    int state = atoi(argv[1]);
+    state = atoi(argv[1]);
 
     if (state > 1) {
-        printf("Enter password: ");
+        printf("Enter reference monitor password: ");
         get_password(password);
         puts("");
     }
 
+    code = get_syscall_code("switch_state");
+    if (code == -1) {
+        printf("Cannot get code for switch_state\n");
+        return 1;
+    }
 
-    long ret = syscall(WRITE_CODE, atoi(argv[1]), password);
+    ret = syscall(code, atoi(argv[1]), password);
     if (ret < 0) {
         switch (errno)
         {

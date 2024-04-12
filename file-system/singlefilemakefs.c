@@ -23,7 +23,6 @@ int main(int argc, char *argv[])
 	struct onefilefs_sb_info sb;
 	struct onefilefs_inode root_inode;
 	struct onefilefs_inode file_inode;
-	struct onefilefs_dir_record record;
 	char *block_padding;
 	char *file_body = "TID, TGID, UID, EUID, Offending program path, Fingerprint\n"; 
 

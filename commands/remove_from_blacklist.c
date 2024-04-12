@@ -8,12 +8,21 @@
 
 int main(int argc, char *argv[]) {
 
+    long ret;
+    int code;
+
     if (argc != 3) {
         printf("Usage: remove_from_blacklist file mode\n");
         return 1;
     }
 
-    long ret = syscall(RM_FROM_BLACKLIST, argv[1], atoi(argv[2]));
+    code = get_syscall_code("remove_from_blacklist");
+    if (code == -1) {
+        printf("Cannot get code for remove_from_blacklist\n");
+        return 1;
+    }
+
+    ret = syscall(code, argv[1], atoi(argv[2]));
     if (ret < 0) {
         switch(errno) {
             case EINVAL:
@@ -27,6 +36,8 @@ int main(int argc, char *argv[]) {
                 return 1;
         }
     }
+
+    printf("File successfully removed from blacklist\n");
     
     return 0;
 }

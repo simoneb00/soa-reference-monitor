@@ -110,8 +110,9 @@ int is_directory(const char *path) {
                 pr_err("%s: error in kern_path (is_directory)\n", MODNAME);
                 return 0;
         }
-        inode = p.dentry->d_inode;
 
+        inode = p.dentry->d_inode;
+        
         return S_ISDIR(inode->i_mode);
 }
 
