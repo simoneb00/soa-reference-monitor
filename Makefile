@@ -10,6 +10,7 @@ all:
 clean:
 	$(MAKE) syscall-table-discoverer/ clean
 	$(MAKE) reference-monitor/ clean
+	$(MAKE) commands/ clean
 	$(MAKE) file-system/ clean
 
 mount: 

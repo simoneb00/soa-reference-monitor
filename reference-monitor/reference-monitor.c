@@ -96,7 +96,7 @@ int get_blacklist_size;
 
 /* read operation for pseudofile containing syscall codes (in /proc) */
 static ssize_t read_proc(struct file *filp, char __user *buffer, size_t length, loff_t *offset) {
-    char proc_buffer[1024];
+    char proc_buffer[512];
     int proc_buffer_len;
 
     proc_buffer_len = snprintf(proc_buffer, sizeof(proc_buffer),
@@ -289,10 +289,12 @@ static int process_dir_entry(struct dir_context *dir, const char *name, int name
 */
 int add_directory_to_rf(struct file *dir, char *dir_path) {
 
+	struct custom_dir_context ctx;
+
         /* add directory path to blacklist */
         add_dir_to_rm(dir_path);
 
-        struct custom_dir_context ctx = {
+        ctx = (struct custom_dir_context) {
                 .dir_ctx = {.actor = &process_dir_entry},
                 .dir_path = dir_path
         };
@@ -353,6 +355,7 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
         struct blacklist_entry *entry, *temp;
         struct blacklist_dir_entry *dir_entry, *dir_temp;
         char *full_path, *dir_path;
+	int is_dir;
 
         if (mode != 0 && mode != 1) {
                 pr_err("%s: invalid mode in sys_remove_path_from_rf\n", MODNAME);
@@ -367,7 +370,7 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
         }
 
 
-        int is_dir = is_directory(full_path);
+        is_dir = is_directory(full_path);
 
         if (is_dir) {
 
@@ -1147,10 +1150,12 @@ int init_module(void) {
         INIT_LIST_HEAD(&reference_monitor.blacklist_dir);
         
         /* spinlock setup */
+	#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
         DEFINE_SPINLOCK(lock);
-        reference_monitor.lock = lock;
-
-	pr_info("Spinlock initialized\n");
+	reference_monitor.lock = lock;
+	#else
+	spin_lock_init(&reference_monitor.lock);
+	#endif
 
         /* password setup */
         enc_password = encrypt_password(password); 

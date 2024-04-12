@@ -75,7 +75,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    printf("State changed to %d\n", ret);
+    printf("State changed to %ld\n", ret);
     
     return 0;
 }

@@ -235,7 +235,7 @@ char *calc_fingerprint(char *filename) {
         /* hash computation */
         crypto_shash_init(desc);
         while (1) {
-                char buf[1024];
+                char buf[512];
                 ret = kernel_read(file, buf, sizeof(buf), &pos);
                 if (ret <= 0)
                 break;
