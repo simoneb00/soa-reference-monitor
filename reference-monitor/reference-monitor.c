@@ -913,7 +913,7 @@ static int security_inode_link_handler(struct kretprobe_instance *ri, struct pt_
 
         full_path = get_path_from_dentry(dentry);
 
-        if (is_blacklisted(full_path) || is_blacklisted_dir(full_path)) {
+        if (is_blacklisted(full_path)) {
                 goto hlink_block;
         }
 
