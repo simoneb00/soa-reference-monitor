@@ -64,7 +64,7 @@ MODULE_DESCRIPTION("Kernel Level Reference Monitor for File Protection");
 static struct kretprobe vfs_open_retprobe;
 static struct kretprobe may_delete_retprobe;
 static struct kretprobe security_inode_symlink_retprobe;
-static struct kretprobe vfs_link_retprobe;
+static struct kretprobe security_inode_link_retprobe;
 static struct kretprobe security_inode_mkdir_retprobe;
 static struct kretprobe security_inode_create_retprobe;
 
@@ -900,24 +900,20 @@ static int blacklisted_directory_update_handler(struct kretprobe_instance *ri, s
 
 
 /**
- * Entry handler for the function vfs_link (hard link creation)
+ * Entry handler for the function security_inode_link (hard link creation)
 */
-static int vfs_link_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
+static int security_inode_link_handler(struct kretprobe_instance *ri, struct pt_regs *regs) {
 
         struct invalid_operation_data *iop;
         char message[200];
         struct dentry *dentry;
-        struct inode *inode;
         char *full_path;
 
         dentry = (struct dentry *)regs->di;
-        inode = dentry->d_inode;
 
         full_path = get_path_from_dentry(dentry);
 
         if (is_blacklisted(full_path) || is_blacklisted_dir(full_path)) {
-                /* set file as immutable */
-                inode->i_flags = inode->i_flags | S_IMMUTABLE;
                 goto hlink_block;
         }
 
@@ -994,7 +990,7 @@ static int kretprobe_init(void)
         /* initialize all kretprobes */
         set_kretprobe(&vfs_open_retprobe, "vfs_open", (kretprobe_handler_t)vfs_open_handler);
         set_kretprobe(&may_delete_retprobe, "may_delete", (kretprobe_handler_t)may_delete_handler);
-        set_kretprobe(&vfs_link_retprobe, "vfs_link", (kretprobe_handler_t)vfs_link_handler);
+        set_kretprobe(&security_inode_link_retprobe, "security_inode_link", (kretprobe_handler_t)security_inode_link_handler);
         set_kretprobe(&security_inode_symlink_retprobe, "security_inode_symlink", (kretprobe_handler_t)security_inode_symlink_handler);
         set_kretprobe(&security_inode_mkdir_retprobe, "security_inode_mkdir", (kretprobe_handler_t)blacklisted_directory_update_handler);
         set_kretprobe(&security_inode_create_retprobe, "security_inode_create", (kretprobe_handler_t)blacklisted_directory_update_handler);
@@ -1008,7 +1004,7 @@ static int kretprobe_init(void)
         
         rps[0] = &vfs_open_retprobe;
         rps[1] = &may_delete_retprobe;
-        rps[2] = &vfs_link_retprobe;
+        rps[2] = &security_inode_link_retprobe;
         rps[3] = &security_inode_symlink_retprobe;
         rps[4] = &security_inode_mkdir_retprobe;
         rps[5] = &security_inode_create_retprobe;
