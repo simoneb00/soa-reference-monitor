@@ -105,4 +105,5 @@ The following commands are available to manage the reference monitor:
   The parameter `mode` can be one of the following:
   * 0 (DELETE_DIRS_ONLY): only the specified directory (and its eventual subdirectories) will be removed from the blacklist. This enables the possibility to create some files/subdirectories inside a blacklisted directory, without whitelisting its whole content.
   * 1 (DELETE_ALL): the specified directory and all its content will be removed from the blacklist.
+  
   `mode` is only evaluated in the case of directories, and ignored in the case of files (although it must still be specified).
