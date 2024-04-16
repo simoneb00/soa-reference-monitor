@@ -88,7 +88,7 @@ The following commands are available to manage the reference monitor:
   * 2 (REC-OFF)
   * 3 (REC-ON)
     
-  This command requires sudo privileges.
+  This command requires sudo privileges and, if the target state is REC-OFF/REC-ON, it also requires the reference monitor password.
 * ```sh
   add_to_blacklist file
   ```
