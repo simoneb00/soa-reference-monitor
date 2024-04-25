@@ -315,7 +315,7 @@ __SYSCALL_DEFINEx(1, _add_path_to_rf, char *, rel_path) {
 #else 
 asmlinkage long sys_add_path_to_rf(char *rel_path) {
 #endif
-        char *path;
+        char *path, *kernel_rel_path;
         struct file *dir;
 
         if (reference_monitor.state < 2) {
@@ -323,9 +323,22 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
                 return -EPERM;
         }
 
-        path = get_full_path(rel_path);
+        kernel_rel_path = kmalloc(PATH_MAX, GFP_KERNEL);
+        if (!kernel_rel_path) {
+                pr_err("%s: Error in kmalloc allocation\n", MODNAME);
+                return -ENOMEM;
+        }
+
+        if (copy_from_user(kernel_rel_path, rel_path, PATH_MAX)) {
+                pr_err("%s: error in copy_from_user\n", MODNAME);
+                kfree(kernel_rel_path);
+                return -EAGAIN;
+        }
+
+        path = get_full_path(kernel_rel_path);
         if (path == NULL) {
                 pr_err("%s: error in getting full path\n", MODNAME);
+                kfree(kernel_rel_path);
                 return -ENOENT;
         }
 
@@ -335,6 +348,7 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
                 if (IS_ERR(dir)) {
                         pr_err("%s: error in opening file %s\n", MODNAME, path);
                         kfree(path);
+                        kfree(kernel_rel_path);
                         return PTR_ERR(dir);
                 }
 
@@ -343,10 +357,10 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
                 filp_close(dir, NULL);
 
         } else {
-
-                add_file_to_rf(path, rel_path);
+                add_file_to_rf(path, kernel_rel_path);
         }
 
+        kfree(kernel_rel_path);
         return 0;
 }
 
@@ -360,7 +374,7 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
 
         struct blacklist_entry *entry, *temp;
         struct blacklist_dir_entry *dir_entry, *dir_temp;
-        char *full_path, *dir_path;
+        char *full_path, *dir_path, *kernel_path;
 	int is_dir;
 
         if (mode != 0 && mode != 1) {
@@ -368,7 +382,19 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
                 return -EINVAL;
         }
 
-        full_path = get_full_path(path);
+        kernel_path = kmalloc(PATH_MAX, GFP_KERNEL);
+        if (!kernel_path) {
+                pr_err("%s: Error in kmalloc allocation\n", MODNAME);
+                return -ENOMEM;
+        }
+
+        if (copy_from_user(kernel_path, path, PATH_MAX)) {
+                pr_err("%s: error in copy_from_user\n", MODNAME);
+                kfree(kernel_path);
+                return -EAGAIN;
+        }
+
+        full_path = get_full_path(kernel_path);
         if (!full_path) {
                 return -ENOENT;
         }
@@ -425,6 +451,7 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
                 spin_unlock(&reference_monitor.lock);
         }
 
+        kfree(kernel_path);
         return 0;
 }
 
@@ -522,6 +549,7 @@ asmlinkage long sys_write_rf_state(int state) {
 
         kuid_t euid;
 	int i, ret;
+        char *kernel_password;
 
         /* check state number */
         if (state < 0 || state > 3) {
@@ -529,18 +557,32 @@ asmlinkage long sys_write_rf_state(int state) {
                 return -EINVAL;
         }
 
+        kernel_password = kmalloc(PASSW_LEN, GFP_KERNEL);
+        if (!kernel_password) {
+                pr_err("%s: Error in kmalloc allocation\n", MODNAME);
+                return -ENOMEM;
+        }
+
+        if (copy_from_user(kernel_password, password, PASSW_LEN)) {
+                pr_err("%s: error in copy_from_user\n", MODNAME);
+                kfree(kernel_password);
+                return -EAGAIN;
+        }
+
         euid = current_euid();
 
         /* check EUID */
         if (!uid_eq(euid, GLOBAL_ROOT_UID)) {
                 pr_err("%s: Access denied: only root (EUID 0) can change the state\n", MODNAME);
+                kfree(kernel_password);
                 return -EPERM;
         }   
 
         /* if requested state is REC-ON or REC-OFF, check password */
         if (state > 1) {
-                if (strcmp(reference_monitor.password, encrypt_password(password)) != 0) {
+                if (strcmp(reference_monitor.password, encrypt_password(kernel_password)) != 0) {
                         pr_err("%s: Access denied: invalid password\n", MODNAME);
+                        kfree(kernel_password);
                         return -EACCES;
                 }
         }
@@ -578,6 +620,7 @@ asmlinkage long sys_write_rf_state(int state) {
                 }
         }
         
+        kfree(kernel_password);
         return reference_monitor.state;
         
 }
