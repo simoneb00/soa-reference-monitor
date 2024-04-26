@@ -8,9 +8,12 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/version.h>
+#include <linux/spinlock.h>
 
+#define DEF_SPINLOCK
 #include "file-system.h"
 
+spinlock_t fs_lock = __SPIN_LOCK_UNLOCKED();
 
 static struct super_operations singlefilefs_super_ops = {
 };

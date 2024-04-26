@@ -401,12 +401,13 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
 
         is_dir = is_directory(full_path);
 
+        spin_lock(&reference_monitor.lock);
+
         if (is_dir) {
 
                 dir_path = add_trailing_slash(full_path);
 
                 /* delete directory from directories blacklist */
-                spin_lock(&reference_monitor.lock);
                 list_for_each_entry_safe(dir_entry, dir_temp, &reference_monitor.blacklist_dir, list) {
                         if (!strcmp(dir_entry->path, full_path) || !strncmp(dir_entry->path, dir_path, strlen(dir_path))) {
                                 AUDIT{
@@ -417,10 +418,8 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
                                 kfree(dir_entry);
                       	 }
                 }
-                spin_unlock(&reference_monitor.lock);
         
                 if (mode == DELETE_ALL) {
-                        spin_lock(&reference_monitor.lock);
                         list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist, list) {
                                 if (!strncmp(dir_path, entry->path, strlen(dir_path))) {
                                         AUDIT{
@@ -431,13 +430,11 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
                                         kfree(entry);
                                 }
                         }
-                        spin_unlock(&reference_monitor.lock);
                 }
 
                 kfree(dir_path);
         } else {
                 /* if the target is a file, mode is ignored */
-                spin_lock(&reference_monitor.lock);
                 list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist, list) {
                         if (!strcmp(full_path, entry->path)) {
                                 AUDIT{
@@ -448,9 +445,9 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
                                 kfree(entry);
                         }
                 }
-                spin_unlock(&reference_monitor.lock);
         }
 
+        spin_unlock(&reference_monitor.lock);
         kfree(kernel_path);
         return 0;
 }
@@ -467,6 +464,7 @@ asmlinkage long sys_get_blacklist_size(void) {
         struct blacklist_entry *entry;
         struct blacklist_dir_entry *dir_entry;
 
+        spin_lock(&reference_monitor.lock);
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
                 total_files_size += strlen("path = ") + strlen(entry->path) +
                         strlen(", filename = ") + strlen(entry->filename) +
@@ -477,6 +475,7 @@ asmlinkage long sys_get_blacklist_size(void) {
         list_for_each_entry(dir_entry, &reference_monitor.blacklist_dir, list) {
                 total_dirs_size += strlen("path = ") + strlen(dir_entry->path) + 2; // +2 for ", " and NULL terminator
         }
+        spin_unlock(&reference_monitor.lock);
 
         if (copy_to_user(files_size, &total_files_size, sizeof(total_files_size)) ||
             copy_to_user(dirs_size, &total_dirs_size, sizeof(total_dirs_size))) {
@@ -511,6 +510,7 @@ asmlinkage long sys_print_blacklist(void) {
         files_ptr = files_buf;
         dirs_ptr = dirs_buf;
 
+        spin_lock(&reference_monitor.lock);
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
                 files_ptr += snprintf(files_ptr, files_size - (files_ptr - files_buf),
                                 "path = %s, filename = %s, inode number = %lu\n",
@@ -519,6 +519,7 @@ asmlinkage long sys_print_blacklist(void) {
 
         if (copy_to_user(files, files_buf, files_size)) {
                 pr_err("%s: Fault in copying blacklisted files to user\n", MODNAME);
+                spin_unlock(&reference_monitor.lock);
                 return -EFAULT;
         }
 
@@ -526,6 +527,7 @@ asmlinkage long sys_print_blacklist(void) {
                 dirs_ptr += snprintf(dirs_ptr, dirs_size - (dirs_ptr - dirs_buf),
                                 "path = %s\n", dir_entry->path);
         }
+        spin_unlock(&reference_monitor.lock);
 
 
         if (copy_to_user(dirs, dirs_buf, dirs_size)) {
@@ -544,7 +546,7 @@ asmlinkage long sys_print_blacklist(void) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4,17,0) 
 __SYSCALL_DEFINEx(2, _write_rf_state, int, state, char*, password) {
 #else
-asmlinkage long sys_write_rf_state(int state) {
+asmlinkage long sys_write_rf_state(int state, char *password) {
 #endif 
 
         kuid_t euid;
@@ -643,12 +645,15 @@ long sys_get_blacklist_size = (unsigned long) __x64_sys_get_blacklist_size;
 int is_blacklisted(const char *path) {
         struct blacklist_entry *entry;
 
+        spin_lock(&reference_monitor.lock);
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
                 if (!strcmp(path, entry->path)) {
+                        spin_unlock(&reference_monitor.lock);
                         return 1;
                 }
         }
-
+        
+        spin_unlock(&reference_monitor.lock);
         return 0;
 }
 
@@ -680,13 +685,15 @@ int is_blacklisted_dir(const char *full_path) {
                 new_path = (char *)full_path;
         }
 
-
+        spin_lock(&reference_monitor.lock);
         list_for_each_entry(entry, &reference_monitor.blacklist_dir, list) {
                 if (!strncmp(new_path, entry->path, strlen(entry->path))) {
                         kfree(new_path);
+                        spin_unlock(&reference_monitor.lock);
                         return 1;
                 }
         }
+        spin_unlock(&reference_monitor.lock);
 
         if (new_path)
                 kfree(new_path);
@@ -703,11 +710,14 @@ int is_blacklisted_hl(const char *path, unsigned long inode_number) {
 
         struct blacklist_entry *entry;
 
+        spin_lock(&reference_monitor.lock);
         list_for_each_entry(entry, &reference_monitor.blacklist, list) {
                 if (!strcmp(path, entry->path) || (inode_number == entry->inode_number)) {
+                        spin_unlock(&reference_monitor.lock);
                         return 1;
                 }
         }
+        spin_unlock(&reference_monitor.lock);
 
         return 0;
 }

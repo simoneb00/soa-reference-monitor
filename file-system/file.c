@@ -10,7 +10,9 @@
 #include <linux/version.h>
 #include <linux/uio.h>
 
+#define DEF_SPINLOCK
 #include "file-system.h"
+
 
 ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t * off) {
 
@@ -23,13 +25,13 @@ ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t
 
     printk("%s: read operation called with len %ld - and offset %lld (the current file size is %lld)",MOD_NAME, len, *off, file_size);
 
-    //this operation is not synchronized 
-    //*off can be changed concurrently 
-    //add synchronization if you need it for any reason
+    //spin_lock(&fs_lock);
 
     //check that *off is within boundaries
-    if (*off >= file_size)
+    if (*off >= file_size) {
+        //spin_unlock(&fs_lock);
         return 0;
+    }
     else if (*off + len > file_size)
         len = file_size - *off;
 
@@ -46,12 +48,14 @@ ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t
 
     bh = (struct buffer_head *)sb_bread(filp->f_path.dentry->d_inode->i_sb, block_to_read);
     if(!bh){
-	return -EIO;
+        //spin_unlock(&fs_lock);
+        return -EIO;
     }
     ret = copy_to_user(buf,bh->b_data + offset, len);
     *off += (len - ret);
     brelse(bh);
 
+    //spin_unlock(&fs_lock);
     return len - ret;
 
 }
@@ -67,18 +71,22 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
     struct buffer_head *bh = NULL;
     size_t copied_bytes;
 
+    spin_lock(&fs_lock);
+
     /* byte size of the payload */
     size_t count = from->count;
 
     char *data = kmalloc(count, GFP_KERNEL);
     if (!data) {
         pr_err("%s: error in kmalloc allocation\n", MOD_NAME);
+        spin_unlock(&fs_lock);
         return 0;
     }
 
     copied_bytes = _copy_from_iter((void *)data, count, from);
     if (copied_bytes != count) {
         pr_err("%s: failed to copy %ld bytes from iov_iter\n", MOD_NAME, count);
+        spin_unlock(&fs_lock);
         return 0;
     }
 
@@ -90,9 +98,17 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
     block_offset = offset % DEFAULT_BLOCK_SIZE;
     block_to_write = offset / DEFAULT_BLOCK_SIZE + 2;  // + superblock + inode
 
+    if (4096 - block_offset < count) {
+        block_to_write++;
+        block_offset = 0;
+        offset += (4096 - block_offset);
+    }
+
     bh = sb_bread(file->f_path.dentry->d_inode->i_sb, block_to_write);
-    if (!bh)
+    if (!bh) {
+        spin_unlock(&fs_lock);
         return -EIO;
+    }
 
     memcpy(bh->b_data + block_offset, data, count);
 
@@ -106,10 +122,11 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
     offset += count;
 
     kfree(data);
-
+    spin_unlock(&fs_lock);
     return count;
     
 }
+
 
 
 struct dentry *onefilefs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flags) {
@@ -122,7 +139,6 @@ struct dentry *onefilefs_lookup(struct inode *parent_inode, struct dentry *child
     printk("%s: running the lookup inode-function for name %s",MOD_NAME,child_dentry->d_name.name);
 
     if(!strcmp(child_dentry->d_name.name, UNIQUE_FILE_NAME)){
-
 	
 	//get a locked inode from the cache 
         the_inode = iget_locked(sb, 1);
@@ -181,6 +197,5 @@ const struct inode_operations onefilefs_inode_ops = {
 const struct file_operations onefilefs_file_operations = {
     .owner = THIS_MODULE,
     .read = onefilefs_read,
-    //.write = append_to_file,
     .write_iter = append_write_iter, 
 };

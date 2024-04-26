@@ -4,7 +4,6 @@
 #include <linux/types.h>
 #include <linux/fs.h>
 
-
 #define MOD_NAME "SINGLE FILE FS"
 
 #define MAGIC 0x42424242
@@ -58,5 +57,9 @@ extern const struct file_operations onefilefs_file_operations;
 
 // dir.c
 extern const struct file_operations onefilefs_dir_operations;
+
+#ifdef DEF_SPINLOCK
+extern spinlock_t fs_lock;
+#endif
 
 #endif
