@@ -64,7 +64,7 @@ The the computation of the cryptographic hash and the writing of the above tuple
    ```
 3. Install the module (in this phase, the user is asked to set the reference monitor password) 
    ```sh
-   sudo make install
+   sudo make mount
    ```
 ### Main Features
 When the module is installed into the kernel, its state is set to OFF (0), so its operations are initially disabled. When the reference monitor is set to one of the reconfiguration states (see section <a href="#usage">Usage</a>), the user can specify files/directories to be blacklisted. Once a file/directory is blacklisted - and the reference monitor is on - the following operations on it are blocked:
