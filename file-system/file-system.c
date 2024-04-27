@@ -8,12 +8,12 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/version.h>
-#include <linux/rwlock_types.h>
+#include <linux/mutex.h>
 
 #define DEF_LOCK
 #include "file-system.h"
 
-rwlock_t fs_rwlock;
+struct mutex mutex;
 
 static struct super_operations singlefilefs_super_ops = {
 };
@@ -141,7 +141,7 @@ static int singlefilefs_init(void) {
     else
         printk("%s: failed to register singlefilefs - error %d", MOD_NAME,ret);
 
-    rwlock_init(&fs_rwlock);
+    mutex_init(&mutex);
 
     return ret;
 }
@@ -157,6 +157,8 @@ static void singlefilefs_exit(void) {
         printk("%s: sucessfully unregistered file system driver\n",MOD_NAME);
     else
         printk("%s: failed to unregister singlefilefs driver - error %d", MOD_NAME, ret);
+
+    mutex_destroy(&mutex);
 }
 
 module_init(singlefilefs_init);

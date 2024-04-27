@@ -9,7 +9,7 @@
 #include <linux/string.h>
 #include <linux/version.h>
 #include <linux/uio.h>
-#include <linux/rwlock_types.h>
+#include <linux/mutex.h>
 
 #define DEF_LOCK
 #include "file-system.h"
@@ -26,13 +26,11 @@ ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t
 
     printk("%s: read operation called with len %ld - and offset %lld (the current file size is %lld)",MOD_NAME, len, *off, file_size);
 
-    read_lock(&fs_rwlock);
-
-    pr_info("Lock acquisition successful\n");
+    mutex_lock(&mutex);
 
     //check that *off is within boundaries
     if (*off >= file_size) {
-        read_unlock(&fs_rwlock);
+        mutex_unlock(&mutex);
         return 0;
     }
     else if (*off + len > file_size)
@@ -51,7 +49,7 @@ ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t
 
     bh = (struct buffer_head *)sb_bread(filp->f_path.dentry->d_inode->i_sb, block_to_read);
     if(!bh){
-        read_unlock(&fs_rwlock);
+        mutex_unlock(&mutex);
         return -EIO;
     }
 
@@ -59,25 +57,25 @@ ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t
     *off += (len - ret);
     brelse(bh);
 
-    pr_info("Releasing the lock\n");
-
-    read_unlock(&fs_rwlock);
+    mutex_unlock(&mutex);
     return len - ret;
 
 }
 
 
 static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
-    struct file *file = iocb->ki_filp;
-    struct inode *the_inode = file->f_inode;
-    loff_t offset = file->f_pos;
-    uint64_t file_size = i_size_read(the_inode);
+
     loff_t block_offset;
     int block_to_write;
     struct buffer_head *bh = NULL;
     size_t copied_bytes;
 
-    write_lock(&fs_rwlock);
+    mutex_lock(&mutex);
+
+    struct file *file = iocb->ki_filp;
+    struct inode *the_inode = file->f_inode;
+    loff_t offset = file->f_pos;
+    uint64_t file_size = i_size_read(the_inode);
 
     /* byte size of the payload */
     size_t count = from->count;
@@ -85,14 +83,14 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
     char *data = kmalloc(count, GFP_KERNEL);
     if (!data) {
         pr_err("%s: error in kmalloc allocation\n", MOD_NAME);
-        write_unlock(&fs_rwlock);
+        mutex_unlock(&mutex);
         return 0;
     }
 
     copied_bytes = _copy_from_iter((void *)data, count, from);
     if (copied_bytes != count) {
         pr_err("%s: failed to copy %ld bytes from iov_iter\n", MOD_NAME, count);
-        write_unlock(&fs_rwlock);
+        mutex_unlock(&mutex);
         return 0;
     }
 
@@ -112,7 +110,7 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
 
     bh = sb_bread(file->f_path.dentry->d_inode->i_sb, block_to_write);
     if (!bh) {
-        write_unlock(&fs_rwlock);
+        mutex_unlock(&mutex);
         return -EIO;
     }
 
@@ -128,7 +126,7 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
     offset += count;
 
     kfree(data);
-    write_unlock(&fs_rwlock);
+    mutex_unlock(&mutex);
     return count;
     
 }

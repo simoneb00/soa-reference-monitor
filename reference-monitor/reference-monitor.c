@@ -646,10 +646,10 @@ long sys_get_blacklist_size = (unsigned long) __x64_sys_get_blacklist_size;
  *  @param filename filename, from which the file's full path is retrieved 
 */
 int is_blacklisted(const char *path) {
-        struct blacklist_entry *entry;
+        struct blacklist_entry *entry, *temp;
 
         spin_lock(&reference_monitor.lock);
-        list_for_each_entry(entry, &reference_monitor.blacklist, list) {
+        list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist, list) {
                 if (!strcmp(path, entry->path)) {
                         spin_unlock(&reference_monitor.lock);
                         return 1;
@@ -669,7 +669,7 @@ int is_blacklisted_dir(const char *full_path) {
 
         char *new_path;
         int path_len;
-        struct blacklist_dir_entry *entry;
+        struct blacklist_dir_entry *entry, *temp;
 
         path_len = strlen(full_path);
         
@@ -689,7 +689,7 @@ int is_blacklisted_dir(const char *full_path) {
         }
 
         spin_lock(&reference_monitor.lock);
-        list_for_each_entry(entry, &reference_monitor.blacklist_dir, list) {
+        list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist_dir, list) {
                 if (!strncmp(new_path, entry->path, strlen(entry->path))) {
                         kfree(new_path);
                         spin_unlock(&reference_monitor.lock);
@@ -711,10 +711,10 @@ int is_blacklisted_dir(const char *full_path) {
 */
 int is_blacklisted_hl(const char *path, unsigned long inode_number) {
 
-        struct blacklist_entry *entry;
+        struct blacklist_entry *entry, *temp;
 
         spin_lock(&reference_monitor.lock);
-        list_for_each_entry(entry, &reference_monitor.blacklist, list) {
+        list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist, list) {
                 if (!strcmp(path, entry->path) || (inode_number == entry->inode_number)) {
                         spin_unlock(&reference_monitor.lock);
                         return 1;

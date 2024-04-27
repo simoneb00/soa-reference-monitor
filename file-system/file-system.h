@@ -59,7 +59,7 @@ extern const struct file_operations onefilefs_file_operations;
 extern const struct file_operations onefilefs_dir_operations;
 
 #ifdef DEF_LOCK
-extern rwlock_t fs_rwlock;
+extern struct mutex mutex;
 #endif
 
 #endif

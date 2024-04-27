@@ -6,24 +6,35 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#define NUM_THREADS 100
+#define NUM_THREADS 10000
 #define FILENAME "test.txt"
 
 void *thread_function(void *arg) {
-    // Apertura del file in modalità scrittura
+    
     int fd = open(FILENAME, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd == -1) {
-        perror("Errore durante l'apertura del file per la scrittura");
+    if (fd) {
+        perror("Error in write-opening the file");
     } else {
-        printf("File %s aperto per la scrittura\n", FILENAME);
+        printf("File %s write-opened\n", FILENAME);
         close(fd);
     }
 
-    // Creazione di un hard link
-    if (link(FILENAME, "hard_link.txt") == -1) {
-        perror("Errore durante la creazione di un hard link");
+    if (link(FILENAME, "hard_link.txt")) {
+        perror("Error in hard link creation");
     } else {
-        printf("Hard link creato con successo\n");
+        printf("Hard link to %s successfully created\n", FILENAME);
+    }
+
+    if (rename(FILENAME, "rename.txt")) {
+        perror("Error in file renaming");
+    } else {
+        printf("File %s successfully renamed\n", FILENAME);
+    }
+
+    if (unlink(FILENAME)) {
+        perror("Error in file deletion");
+    } else {
+        printf("File %s successfully deleted\n", FILENAME);
     }
 }
 
@@ -36,7 +47,7 @@ int main() {
         thread_args[i] = i;
         result = pthread_create(&threads[i], NULL, thread_function, &thread_args[i]);
         if (result) {
-            fprintf(stderr, "Errore durante la creazione del thread %d\n", i);
+            fprintf(stderr, "Error in creating thread %d\n", i);
             exit(EXIT_FAILURE);
         }
     }
@@ -44,7 +55,7 @@ int main() {
     for (i = 0; i < NUM_THREADS; i++) {
         result = pthread_join(threads[i], NULL);
         if (result) {
-            fprintf(stderr, "Errore durante l'attesa del thread %d\n", i);
+            fprintf(stderr, "Errore in waiting thread %d\n", i);
             exit(EXIT_FAILURE);
         }
     }
