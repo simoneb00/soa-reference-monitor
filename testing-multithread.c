@@ -6,7 +6,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#define NUM_THREADS 10000
+#define NUM_THREADS 5000
 #define FILENAME "test.txt"
 
 void *thread_function(void *arg) {

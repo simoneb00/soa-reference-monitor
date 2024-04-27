@@ -22,5 +22,5 @@ mount:
 	insmod the_file-system.ko
 
 create-fs:
-	dd bs=4096 count=100 if=/dev/zero of=image
+	dd bs=4096 count=1000 if=/dev/zero of=image
 	./singlefilemakefs image
