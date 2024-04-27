@@ -65,22 +65,26 @@ ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t
 
 static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
 
-    loff_t block_offset;
+    loff_t block_offset, offset;
     int block_to_write;
     struct buffer_head *bh = NULL;
-    size_t copied_bytes;
-
+    size_t copied_bytes, count;
+    struct file *file;
+    struct inode *the_inode;
+    uint64_t file_size;
+    char *data;
+    	
     mutex_lock(&mutex);
 
-    struct file *file = iocb->ki_filp;
-    struct inode *the_inode = file->f_inode;
-    loff_t offset = file->f_pos;
-    uint64_t file_size = i_size_read(the_inode);
+    file = iocb->ki_filp;
+    the_inode = file->f_inode;
+    offset = file->f_pos;
+    file_size = i_size_read(the_inode);
 
     /* byte size of the payload */
-    size_t count = from->count;
+    count = from->count;
 
-    char *data = kmalloc(count, GFP_KERNEL);
+    data = kmalloc(count, GFP_KERNEL);
     if (!data) {
         pr_err("%s: error in kmalloc allocation\n", MOD_NAME);
         mutex_unlock(&mutex);
