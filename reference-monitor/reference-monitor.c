@@ -317,6 +317,7 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
 #endif
         char *path, *kernel_rel_path;
         struct file *dir;
+        int ret;
 
         if (reference_monitor.state < 2) {
                 printk(KERN_ERR "%s: the reference monitor is not in a reconfiguration state\n", MODNAME);
@@ -329,11 +330,13 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
                 return -ENOMEM;
         }
 
-        if (copy_from_user(kernel_rel_path, rel_path, PATH_MAX)) {
-                pr_err("%s: error in copy_from_user\n", MODNAME);
+        ret = copy_from_user(kernel_rel_path, rel_path, PATH_MAX); 
+        if (ret) {
+                pr_err("%s: error in copy_from_user (return value %d)\n", MODNAME, ret);
                 kfree(kernel_rel_path);
                 return -EAGAIN;
         }
+        
 
         path = get_full_path(kernel_rel_path);
         if (path == NULL) {

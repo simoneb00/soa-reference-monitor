@@ -8,12 +8,12 @@
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/version.h>
-#include <linux/spinlock.h>
+#include <linux/rwlock_types.h>
 
-#define DEF_SPINLOCK
+#define DEF_LOCK
 #include "file-system.h"
 
-spinlock_t fs_lock = __SPIN_LOCK_UNLOCKED();
+rwlock_t fs_rwlock;
 
 static struct super_operations singlefilefs_super_ops = {
 };
@@ -140,6 +140,8 @@ static int singlefilefs_init(void) {
         printk("%s: sucessfully registered singlefilefs\n",MOD_NAME);
     else
         printk("%s: failed to register singlefilefs - error %d", MOD_NAME,ret);
+
+    rwlock_init(&fs_rwlock);
 
     return ret;
 }

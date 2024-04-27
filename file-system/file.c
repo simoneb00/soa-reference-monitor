@@ -9,8 +9,9 @@
 #include <linux/string.h>
 #include <linux/version.h>
 #include <linux/uio.h>
+#include <linux/rwlock_types.h>
 
-#define DEF_SPINLOCK
+#define DEF_LOCK
 #include "file-system.h"
 
 
@@ -25,11 +26,13 @@ ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t
 
     printk("%s: read operation called with len %ld - and offset %lld (the current file size is %lld)",MOD_NAME, len, *off, file_size);
 
-    //spin_lock(&fs_lock);
+    read_lock(&fs_rwlock);
+
+    pr_info("Lock acquisition successful\n");
 
     //check that *off is within boundaries
     if (*off >= file_size) {
-        //spin_unlock(&fs_lock);
+        read_unlock(&fs_rwlock);
         return 0;
     }
     else if (*off + len > file_size)
@@ -48,14 +51,17 @@ ssize_t onefilefs_read(struct file * filp, char __user * buf, size_t len, loff_t
 
     bh = (struct buffer_head *)sb_bread(filp->f_path.dentry->d_inode->i_sb, block_to_read);
     if(!bh){
-        //spin_unlock(&fs_lock);
+        read_unlock(&fs_rwlock);
         return -EIO;
     }
+
     ret = copy_to_user(buf,bh->b_data + offset, len);
     *off += (len - ret);
     brelse(bh);
 
-    //spin_unlock(&fs_lock);
+    pr_info("Releasing the lock\n");
+
+    read_unlock(&fs_rwlock);
     return len - ret;
 
 }
@@ -71,7 +77,7 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
     struct buffer_head *bh = NULL;
     size_t copied_bytes;
 
-    spin_lock(&fs_lock);
+    write_lock(&fs_rwlock);
 
     /* byte size of the payload */
     size_t count = from->count;
@@ -79,14 +85,14 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
     char *data = kmalloc(count, GFP_KERNEL);
     if (!data) {
         pr_err("%s: error in kmalloc allocation\n", MOD_NAME);
-        spin_unlock(&fs_lock);
+        write_unlock(&fs_rwlock);
         return 0;
     }
 
     copied_bytes = _copy_from_iter((void *)data, count, from);
     if (copied_bytes != count) {
         pr_err("%s: failed to copy %ld bytes from iov_iter\n", MOD_NAME, count);
-        spin_unlock(&fs_lock);
+        write_unlock(&fs_rwlock);
         return 0;
     }
 
@@ -100,13 +106,13 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
 
     if (4096 - block_offset < count) {
         block_to_write++;
-        block_offset = 0;
         offset += (4096 - block_offset);
+        block_offset = 0;
     }
 
     bh = sb_bread(file->f_path.dentry->d_inode->i_sb, block_to_write);
     if (!bh) {
-        spin_unlock(&fs_lock);
+        write_unlock(&fs_rwlock);
         return -EIO;
     }
 
@@ -122,7 +128,7 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
     offset += count;
 
     kfree(data);
-    spin_unlock(&fs_lock);
+    write_unlock(&fs_rwlock);
     return count;
     
 }
