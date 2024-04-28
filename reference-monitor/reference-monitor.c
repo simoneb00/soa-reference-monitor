@@ -786,6 +786,8 @@ static void log_info(void) {
         char *exe_path;
         packed_work *def_work;
 
+        mutex_lock(&def_work_mutex);
+
         /* allocate a struct log_data, to gather all data to be logged */
         log_data = kmalloc(sizeof(struct log_data), GFP_KERNEL);
         if (!log_data) {
@@ -797,14 +799,12 @@ static void log_info(void) {
         mm = current->mm;
         exe_dentry = mm->exe_file->f_path.dentry;
         exe_path = get_path_from_dentry(exe_dentry);
-
+        
         log_data->exe_path = kstrdup(exe_path, GFP_KERNEL);
         log_data->tid = current->pid;
         log_data->tgid = task_tgid_vnr(current);
         log_data->uid = current_uid().val;
         log_data->euid = current_euid().val;
-
-        mutex_lock(&def_work_mutex);
 
         /* Schedule hash computation and writing on file in deferred work */
         def_work = kmalloc(sizeof(packed_work), GFP_KERNEL);

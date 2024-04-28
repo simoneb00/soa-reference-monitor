@@ -6,12 +6,15 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-#define NUM_THREADS 10000
+#define NUM_THREADS 5000
 #define FILENAME "test.txt"
 #define DIRNAME "test"
 #define NEW_DIR "test/directory"
 
 void *thread_function(void *arg) {
+
+    pthread_t thread_id = pthread_self();
+
   /*  
     // write-open the file
     int fd = open(FILENAME, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -50,25 +53,18 @@ void *thread_function(void *arg) {
         printf("File %s successfully deleted\n", FILENAME);
     }
 
-    // unlink the directory
-    if (unlink(DIRNAME)) {
-        perror("Error in file deletion");
-    } else {
-        printf("File %s successfully deleted\n", DIRNAME);
-    }
-
     // create symlink to directory
-    if (symlink(FILENAME, "symlink.txt") == -1) {
+    if (symlink(DIRNAME, "symlink") == -1) {
         perror("Error in symbolic link creation");
     } else {
         printf("Symbolic link to %s successfully created\n", FILENAME);
     }
 */
     // create subdirectory in blacklisted directory
-    if (creat(NEW_DIR, 0755) == -1) {
+    if (mkdir(NEW_DIR, 0700) == -1) {
         perror("Error in directory creation");
     } else {
-        printf("Directory %s created\n", NEW_DIR);
+        printf("[Thread %lu] Directory %s created\n", (unsigned long)thread_id, NEW_DIR);
     }
 
 }
