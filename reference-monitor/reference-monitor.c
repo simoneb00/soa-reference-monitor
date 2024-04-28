@@ -94,6 +94,9 @@ int rm_from_blacklist;
 int print_blacklist;
 int get_blacklist_size;
 
+/* mutex for synchronization in deferred work scheduling */
+struct mutex def_work_mutex;
+
 /* read operation for pseudofile containing syscall codes (in /proc) */
 static ssize_t read_proc(struct file *filp, char __user *buffer, size_t length, loff_t *offset) {
     char proc_buffer[512];
@@ -801,6 +804,8 @@ static void log_info(void) {
         log_data->uid = current_uid().val;
         log_data->euid = current_euid().val;
 
+        mutex_lock(&def_work_mutex);
+
         /* Schedule hash computation and writing on file in deferred work */
         def_work = kmalloc(sizeof(packed_work), GFP_KERNEL);
         if (def_work == NULL) {
@@ -814,6 +819,8 @@ static void log_info(void) {
         __INIT_WORK(&(def_work->the_work),(void*)deferred_work,(unsigned long)(&(def_work->the_work)));
 
         schedule_work(&def_work->the_work);
+
+        mutex_unlock(&def_work_mutex);
 }
 
 /**
@@ -1165,6 +1172,8 @@ int init_module(void) {
 	spin_lock_init(&reference_monitor.lock);
 	#endif
 
+        mutex_init(&def_work_mutex);
+
         /* password setup */
         enc_password = encrypt_password(password); 
         reference_monitor.password = enc_password;
@@ -1204,5 +1213,7 @@ void cleanup_module(void) {
         }
         unregister_kretprobes(rps, NUM_KRETPROBES);
         kfree(rps);
+
+        mutex_destroy(&def_work_mutex);
         
 }
