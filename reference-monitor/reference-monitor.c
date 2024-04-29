@@ -907,11 +907,6 @@ static int vfs_open_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
                 /* retrieve inode number (hard link protection) */
                 inode = dentry->d_inode;
                 inode_number = inode->i_ino;
-
-                if (strstr(full_path, "test.txt") != NULL) {
-                        pr_info("Thread %d, path is %s, inode is %ld\n", current->pid, full_path, inode_number);
-                }
-                
                 
                 if (is_blacklisted_hl(full_path, inode_number)) {
                         /* set message */

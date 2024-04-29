@@ -98,7 +98,7 @@ static ssize_t append_write_iter(struct kiocb *iocb, struct iov_iter *from) {
         return 0;
     }
 
-    //pr_info("%s: Trying to write string: %s", MOD_NAME, data);
+    pr_info("%s: Trying to write string: %s", MOD_NAME, data);
 
     offset = file_size; 
 

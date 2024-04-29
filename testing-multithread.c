@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <string.h>
 
 #define NUM_THREADS 30000
 #define FILENAME "test.txt"
@@ -23,6 +24,15 @@ void *thread_function() {
         perror("Error in write-opening the file");
     } else {
         printf("[Thread %d] File %s write-opened\n", x, FILENAME);
+
+        char *buffer = "test\n";
+        ssize_t bytes_written = write(fd, buffer, strlen(buffer));
+        if (bytes_written < 0) {
+            perror("Error in writing to file");
+        } else {
+            printf("[Thread %d] %s successfully updated \n", x, FILENAME);
+        }
+
         close(fd);
     }
 
