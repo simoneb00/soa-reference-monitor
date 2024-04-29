@@ -94,8 +94,8 @@ int rm_from_blacklist;
 int print_blacklist;
 int get_blacklist_size;
 
-/* mutex for synchronization in deferred work scheduling */
-struct mutex def_work_mutex;
+/* spinlock for synchronization in deferred work scheduling */
+spinlock_t def_work_lock;
 
 /* read operation for pseudofile containing syscall codes (in /proc) */
 static ssize_t read_proc(struct file *filp, char __user *buffer, size_t length, loff_t *offset) {
@@ -137,7 +137,7 @@ int add_dir_to_rm(char *path) {
         
         int path_len = strlen(path);
 
-        new_path = kmalloc(path_len + 2, GFP_KERNEL); // Add '/' at the end
+        new_path = kmalloc(path_len + 2, GFP_ATOMIC); // Add '/' at the end
         if (!new_path) {
                 pr_err("%s: error in kmalloc allocation (add_dir_to_rm)\n", MODNAME);
                 return -ENOMEM;
@@ -149,14 +149,14 @@ int add_dir_to_rm(char *path) {
                 strcat(new_path, "/");
         }
 
-        new_entry = kmalloc(sizeof(struct blacklist_dir_entry), GFP_KERNEL);
+        new_entry = kmalloc(sizeof(struct blacklist_dir_entry), GFP_ATOMIC);
         if (!new_entry) {
                 pr_err("%s: error in kmalloc allocation (add_dir_to_rm)\n", MODNAME);
                 kfree(new_path);
                 return -ENOMEM;
         }
 
-        new_entry->path = kstrdup(new_path, GFP_KERNEL);
+        new_entry->path = kstrdup(new_path, GFP_ATOMIC);
         if (!new_entry->path) {
                 pr_err("%s: error in kstrdup (add_dir_to_rm)\n", MODNAME);
                 kfree(new_entry);
@@ -184,20 +184,20 @@ int add_file_to_rf(char *path, char *rel_path) {
         struct blacklist_entry *new_entry;
         unsigned long inode_number;
 
-        new_entry = kmalloc(sizeof(struct blacklist_entry), GFP_KERNEL);
+        new_entry = kmalloc(sizeof(struct blacklist_entry), GFP_ATOMIC);
         if (!new_entry) {
                 pr_err("%s: error in kmalloc allocation (add_file_to_rf)\n", MODNAME);
                 return -ENOMEM;
         }
 
-        new_entry->path = kstrdup(path, GFP_KERNEL);
+        new_entry->path = kstrdup(path, GFP_ATOMIC);
         if (!new_entry->path) {
                 kfree(new_entry);
                 pr_err("%s: error in kstrdup (add_file_to_rf)\n", MODNAME);
                 return -ENOMEM;
         }
 
-        new_entry->filename = kstrdup(kbasename(rel_path), GFP_KERNEL);
+        new_entry->filename = kstrdup(kbasename(rel_path), GFP_ATOMIC);
         if (!new_entry->filename) {
                 kfree(new_entry);
                 pr_err("%s: error in kstrdup (add_file_to_rf)\n", MODNAME);
@@ -232,7 +232,7 @@ static int process_dir_entry(struct dir_context *dir, const char *name, int name
 
         /* retrieve base dir path from struct custom_dir_context */
         custom_ctx = container_of(dir, struct custom_dir_context, dir_ctx);
-        full_path = kmalloc(sizeof(char)*PATH_MAX, GFP_KERNEL);
+        full_path = kmalloc(sizeof(char)*PATH_MAX, GFP_ATOMIC);
         if (!full_path) {
                 pr_err("%s: kmalloc allocation error (process_dir_entry)\n", MODNAME);
                 return false;
@@ -241,7 +241,7 @@ static int process_dir_entry(struct dir_context *dir, const char *name, int name
 
 
         /* get file/subdirectory name */
-        file_name = kmalloc(name_len + 1, GFP_KERNEL);
+        file_name = kmalloc(name_len + 1, GFP_ATOMIC);
         if (!file_name) {
                 pr_err("%s: kmalloc allocation error (process_dir_entry)\n", MODNAME);
                 kfree(full_path);
@@ -327,7 +327,7 @@ asmlinkage long sys_add_path_to_rf(char *rel_path) {
                 return -EPERM;
         }
 
-        kernel_rel_path = kmalloc(PATH_MAX, GFP_KERNEL);
+        kernel_rel_path = kmalloc(PATH_MAX, GFP_ATOMIC);
         if (!kernel_rel_path) {
                 pr_err("%s: Error in kmalloc allocation\n", MODNAME);
                 return -ENOMEM;
@@ -388,7 +388,7 @@ asmlinkage long sys_remove_path_from_rf(char *path, int mode) {
                 return -EINVAL;
         }
 
-        kernel_path = kmalloc(PATH_MAX, GFP_KERNEL);
+        kernel_path = kmalloc(PATH_MAX, GFP_ATOMIC);
         if (!kernel_path) {
                 pr_err("%s: Error in kmalloc allocation\n", MODNAME);
                 return -ENOMEM;
@@ -506,8 +506,8 @@ asmlinkage long sys_print_blacklist(void) {
                 return -EINVAL;
         }
 
-        files_buf = kmalloc(files_size, GFP_KERNEL);
-        dirs_buf = kmalloc(dirs_size, GFP_KERNEL);
+        files_buf = kmalloc(files_size, GFP_ATOMIC);
+        dirs_buf = kmalloc(dirs_size, GFP_ATOMIC);
 
         if (!files_buf || !dirs_buf) {
                 return -ENOMEM;
@@ -565,7 +565,7 @@ asmlinkage long sys_write_rf_state(int state, char *password) {
                 return -EINVAL;
         }
 
-        kernel_password = kmalloc(PASSW_LEN, GFP_KERNEL);
+        kernel_password = kmalloc(PASSW_LEN, GFP_ATOMIC);
         if (!kernel_password) {
                 pr_err("%s: Error in kmalloc allocation\n", MODNAME);
                 return -ENOMEM;
@@ -658,7 +658,6 @@ int is_blacklisted(const char *path) {
                         return 1;
                 }
         }
-        
         spin_unlock(&reference_monitor.lock);
         return 0;
 }
@@ -668,41 +667,30 @@ int is_blacklisted(const char *path) {
  * a blacklisted directory's path, i.e. it is a subdirectory of a blacklisted directory)
  * @param path directory path
 */
-int is_blacklisted_dir(const char *full_path) {
+int is_blacklisted_dir(char *full_path) {
 
-        char *new_path;
         int path_len;
         struct blacklist_dir_entry *entry, *temp;
+
+        spin_lock(&reference_monitor.lock);
 
         path_len = strlen(full_path);
         
         /* add / at the end of the path */
         if (full_path[path_len - 1] != '/') {
-                new_path = kmalloc(strlen(full_path) + 2, GFP_KERNEL);
-                if (!new_path) {
-                        pr_err("%s: error in kmalloc allocation (is_blacklisted_dir)\n", MODNAME);
-                        return 0;
-                }
-
-                strcpy(new_path, full_path);
-                strcat(new_path, "/");
-
-        } else {
-                new_path = (char *)full_path;
+                strcat((char *)full_path, "/");
         }
 
-        spin_lock(&reference_monitor.lock);
         list_for_each_entry_safe(entry, temp, &reference_monitor.blacklist_dir, list) {
-                if (!strncmp(new_path, entry->path, strlen(entry->path))) {
-                        kfree(new_path);
+                //if (!strncmp(new_path, entry->path, strlen(entry->path))) {
+                if (!strncmp(full_path, entry->path, strlen(entry->path))) {
+                        //kfree(new_path);
                         spin_unlock(&reference_monitor.lock);
                         return 1;
                 }
         }
-        spin_unlock(&reference_monitor.lock);
 
-        if (new_path)
-                kfree(new_path);
+        spin_unlock(&reference_monitor.lock);
         return 0;
 }
 
@@ -786,12 +774,13 @@ static void log_info(void) {
         char *exe_path;
         packed_work *def_work;
 
-        mutex_lock(&def_work_mutex);
+        spin_lock(&def_work_lock);
 
         /* allocate a struct log_data, to gather all data to be logged */
-        log_data = kmalloc(sizeof(struct log_data), GFP_KERNEL);
+        log_data = kmalloc(sizeof(struct log_data), GFP_ATOMIC);
         if (!log_data) {
                 pr_err("%s: error in kmalloc allocation (log_info)\n", MODNAME);
+                spin_unlock(&def_work_lock);
                 return;
         }
 
@@ -800,16 +789,17 @@ static void log_info(void) {
         exe_dentry = mm->exe_file->f_path.dentry;
         exe_path = get_path_from_dentry(exe_dentry);
         
-        log_data->exe_path = kstrdup(exe_path, GFP_KERNEL);
+        log_data->exe_path = kstrdup(exe_path, GFP_ATOMIC);
         log_data->tid = current->pid;
         log_data->tgid = task_tgid_vnr(current);
         log_data->uid = current_uid().val;
         log_data->euid = current_euid().val;
 
         /* Schedule hash computation and writing on file in deferred work */
-        def_work = kmalloc(sizeof(packed_work), GFP_KERNEL);
+        def_work = kmalloc(sizeof(packed_work), GFP_ATOMIC);
         if (def_work == NULL) {
                 pr_err("%s: tasklet buffer allocation failure\n",MODNAME);
+                spin_unlock(&def_work_lock);
                 return;
         }
 
@@ -820,7 +810,7 @@ static void log_info(void) {
 
         schedule_work(&def_work->the_work);
 
-        mutex_unlock(&def_work_mutex);
+        spin_unlock(&def_work_lock);
 }
 
 /**
@@ -878,7 +868,7 @@ block_delete:
         /* set message */
         iop = (struct invalid_operation_data *)ri->data;
         sprintf(message, "%s [BLOCKED]: Deletion attempt on file %s\n", MODNAME, full_path);
-        iop->message = kstrdup(message, GFP_KERNEL);
+        iop->message = kstrdup(message, GFP_ATOMIC);
 
         /* schedule return handler's execution */
         return 0;
@@ -917,12 +907,17 @@ static int vfs_open_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
                 /* retrieve inode number (hard link protection) */
                 inode = dentry->d_inode;
                 inode_number = inode->i_ino;
+
+                if (strstr(full_path, "test.txt") != NULL) {
+                        pr_info("Thread %d, path is %s, inode is %ld\n", current->pid, full_path, inode_number);
+                }
+                
                 
                 if (is_blacklisted_hl(full_path, inode_number)) {
                         /* set message */
                         iop = (struct invalid_operation_data *)ri->data;
                         sprintf(message, "%s [BLOCKED]: Writing attempt on blacklisted file %s\n", MODNAME, full_path);
-                        iop->message = kstrdup(message, GFP_KERNEL);
+                        iop->message = kstrdup(message, GFP_ATOMIC);
 
                         /* schedule return handler execution, that will update the return value (fd) to -1  */
                         return 0;
@@ -953,7 +948,7 @@ static int blacklisted_directory_update_handler(struct kretprobe_instance *ri, s
                 /* set message */
                 iop = (struct invalid_operation_data *)ri->data;
                 sprintf(message, "%s [BLOCKED]: File/subdirectory creation in blacklisted directory %s\n", MODNAME, kbasename(full_path));
-                iop->message = kstrdup(message, GFP_KERNEL);
+                iop->message = kstrdup(message, GFP_ATOMIC);
 
                 return 0;
         }
@@ -987,7 +982,7 @@ hlink_block:
         /* set message */
         iop = (struct invalid_operation_data *)ri->data;
         sprintf(message, "%s [BLOCKED]: Hard link creation on file %s\n", MODNAME, full_path);
-        iop->message = kstrdup(message, GFP_KERNEL);
+        iop->message = kstrdup(message, GFP_ATOMIC);
 
         /* schedule return handler's execution */
         return 0;
@@ -1023,7 +1018,7 @@ symlink_block:
         /* set message */
         iop = (struct invalid_operation_data *)ri->data;
         sprintf(message, "%s [BLOCKED]: Symlink creation on file %s\n", MODNAME, full_path);
-        iop->message = kstrdup(message, GFP_KERNEL);
+        iop->message = kstrdup(message, GFP_ATOMIC);
 
         /* schedule return handler's execution */
         kfree(full_path);
@@ -1059,7 +1054,7 @@ static int kretprobe_init(void)
         set_kretprobe(&security_inode_create_retprobe, "security_inode_create", (kretprobe_handler_t)blacklisted_directory_update_handler);
         
         /* kretprobes array allocation */
-        rps = kmalloc(NUM_KRETPROBES*sizeof(struct kretprobe *), GFP_KERNEL);
+        rps = kmalloc(NUM_KRETPROBES*sizeof(struct kretprobe *), GFP_ATOMIC);
         if (rps == NULL) {
                 pr_err("%s: kmalloc allocation of rps failed\n", MODNAME);
                 return -ENOMEM;
@@ -1164,15 +1159,9 @@ int init_module(void) {
         INIT_LIST_HEAD(&reference_monitor.blacklist);
         INIT_LIST_HEAD(&reference_monitor.blacklist_dir);
         
-        /* spinlock setup */
-	#if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
-        DEFINE_SPINLOCK(lock);
-	reference_monitor.lock = lock;
-	#else
+        /* spinlocks setup */
 	spin_lock_init(&reference_monitor.lock);
-	#endif
-
-        mutex_init(&def_work_mutex);
+        spin_lock_init(&def_work_lock);
 
         /* password setup */
         enc_password = encrypt_password(password); 
@@ -1213,7 +1202,5 @@ void cleanup_module(void) {
         }
         unregister_kretprobes(rps, NUM_KRETPROBES);
         kfree(rps);
-
-        mutex_destroy(&def_work_mutex);
         
 }

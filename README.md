@@ -92,7 +92,7 @@ The following commands are available to manage the reference monitor:
 * ```sh
   add_to_blacklist file
   ```
-  Add a file/directory to the blacklist.\
+  Add a file/directory to the blacklist. \
   This command requires the reference monitor to be on a reconfiguration state.
 * ```sh
   print_blacklist

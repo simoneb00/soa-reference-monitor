@@ -22,4 +22,13 @@ mount:
 unmount:
 	rmmod the_usctm
 	rmmod the_reference-monitor
-	rmmod the_file-system
+
+testing:
+	@chmod +x prepare_testing.sh
+	@./prepare_testing.sh
+
+	@gcc -Wall -Wextra testing-multithread.c -o testing-multithread
+
+	@echo ""
+	@echo ""
+	@echo "Done, to run tests type ./testing.sh or ./testing-multithread"

@@ -14,19 +14,30 @@
 
 char *get_path_from_dentry(struct dentry *dentry) {
 
-	char *buffer, *full_path;
+	char *buffer, *full_path, *ret;
+        int len;
 
-        buffer = (char *)__get_free_page(GFP_KERNEL);
+        buffer = (char *)__get_free_page(GFP_ATOMIC);
         if (!buffer)
                 return NULL;
 
-        full_path = dentry_path_raw(dentry, buffer, PATH_MAX);
-        if (IS_ERR(full_path)) {
-                pr_err("dentry_path_raw failed: %li", PTR_ERR(full_path));
+        ret = dentry_path_raw(dentry, buffer, PATH_MAX);
+        if (IS_ERR(ret)) {
+                pr_err("dentry_path_raw failed: %li", PTR_ERR(ret));
                 free_page((unsigned long)buffer);
                 return NULL;
         } 
 
+        len = strlen(ret);
+
+        full_path = kmalloc(len + 2, GFP_ATOMIC);
+        if (!full_path) {
+                pr_err("%s: error in kmalloc allocation (get_path_from_dentry)\n", MODNAME);
+                return NULL;
+        }
+
+        strncpy(full_path, ret, len);
+        full_path[len + 1] = '\0';
 
         free_page((unsigned long)buffer);
         return full_path;
@@ -43,7 +54,7 @@ char *get_full_path(const char *rel_path) {
         }
 
 
-        k_full_path = kmalloc(PATH_MAX, GFP_KERNEL);
+        k_full_path = kmalloc(PATH_MAX, GFP_ATOMIC);
         if (!k_full_path) {
                 pr_err("%s: error in kmalloc (get_full_path)\n", MODNAME);
                 return NULL; 
@@ -51,7 +62,7 @@ char *get_full_path(const char *rel_path) {
 
         ret = kern_path(rel_path, LOOKUP_FOLLOW, &path);
         if (ret == -ENOENT) {
-                rel_path_tilde = kmalloc(PATH_MAX, GFP_KERNEL);
+                rel_path_tilde = kmalloc(PATH_MAX, GFP_ATOMIC);
                 if (!rel_path_tilde) {
                         pr_err("%s: error in kmalloc (rel_path_tilde)\n", MODNAME);
                         return NULL; 
@@ -135,7 +146,7 @@ char *get_dir_path_from_fd(int fd) {
         p = file->f_path;
         d = p.dentry;
 
-        buffer = (char *)__get_free_page(GFP_KERNEL);
+        buffer = (char *)__get_free_page(GFP_ATOMIC);
         if (!buffer)
                 return NULL;
         path_name = dentry_path_raw(d, buffer, PAGE_SIZE);
@@ -219,7 +230,7 @@ char *calc_fingerprint(char *filename) {
         }
 
         /* hash descriptor allocation */
-        desc = kmalloc(sizeof(struct shash_desc) + crypto_shash_descsize(hash_tfm), GFP_KERNEL);
+        desc = kmalloc(sizeof(struct shash_desc) + crypto_shash_descsize(hash_tfm), GFP_ATOMIC);
         if (!desc) {
                 pr_err("Failed to allocate hash descriptor\n");
                 goto out;
@@ -227,7 +238,7 @@ char *calc_fingerprint(char *filename) {
         desc->tfm = hash_tfm;
 
         /* digest allocation */
-        digest = kmalloc(32, GFP_KERNEL);
+        digest = kmalloc(32, GFP_ATOMIC);
         if (!digest) {
                 pr_err("Failed to allocate hash buffer\n");
                 goto out;
@@ -245,7 +256,7 @@ char *calc_fingerprint(char *filename) {
         crypto_shash_final(desc, digest);
 
         /* result allocation */
-        result = kmalloc(2 * 32 + 1, GFP_KERNEL);
+        result = kmalloc(2 * 32 + 1, GFP_ATOMIC);
         if (!result) {
                 pr_err("Failed to allocate memory for result\n");
                 goto out;
@@ -289,7 +300,7 @@ char *encrypt_password(const char *password) {
         }
 
         /* hash descriptor allocation */
-        desc = kmalloc(sizeof(struct shash_desc) + crypto_shash_descsize(hash_tfm), GFP_KERNEL);
+        desc = kmalloc(sizeof(struct shash_desc) + crypto_shash_descsize(hash_tfm), GFP_ATOMIC);
         if (!desc) {
                 printk(KERN_ERR "Failed to allocate hash descriptor\n");
                 goto out;
@@ -297,7 +308,7 @@ char *encrypt_password(const char *password) {
         desc->tfm = hash_tfm;
 
         /* digest allocation */
-        digest = kmalloc(32, GFP_KERNEL);
+        digest = kmalloc(32, GFP_ATOMIC);
         if (!digest) {
                 printk(KERN_ERR "Failed to allocate hash buffer\n");
                 goto out;
@@ -311,7 +322,7 @@ char *encrypt_password(const char *password) {
         }
 
         /* result allocation */
-        result = kmalloc(2 * 32 + 1, GFP_KERNEL);
+        result = kmalloc(2 * 32 + 1, GFP_ATOMIC);
         if (!result) {
                 printk(KERN_ERR "Failed to allocate memory for result\n");
                 goto out;
@@ -340,7 +351,7 @@ char *add_trailing_slash(char *input) {
 	char *result;
 
   	len = strlen(input);
-    	result = kmalloc(len + 2, GFP_KERNEL); 
+    	result = kmalloc(len + 2, GFP_ATOMIC); 
 
     	if (result == NULL) {
         	pr_err("Errore di allocazione di memoria\n");

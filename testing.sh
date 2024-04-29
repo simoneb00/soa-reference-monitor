@@ -6,40 +6,6 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'
 
-
-echo "creating testing directories/subdirectories/files (if not existing)"
-if [ ! -d "test" ]; then
-    mkdir test
-fi
-if [ ! -f "test/test.txt" ]; then
-    touch test/test.txt
-fi
-if [ ! -d "test/test1" ]; then
-    mkdir test/test1
-fi
-if [ ! -f "test/test1/test.txt" ]; then
-    touch test/test1/test.txt
-fi
-
-if [ ! -f "test.txt" ]; then
-    touch test.txt
-fi
-echo ""
-
-# switch state to REC ON (a password should be requested)
-echo "State switch to REC-ON"
-sudo switch_state 3
-echo ""
-
-# add directories and files to blacklist
-echo "Adding test/ and test.txt to the blacklist"
-add_to_blacklist test
-add_to_blacklist test.txt
-echo ""
-
-print_blacklist
-echo ""
-
 # try to write on blacklisted file
 echo "Attempt to write on blacklisted file test.txt"
 echo "test" > test.txt
@@ -143,24 +109,4 @@ if [ ${error_counter} == 0 ]; then
 else
     echo -e "${RED}Tests completed with ${error_counter} errors${NC}"
 fi
-echo ""
-
-# remove blacklisted directory (DELETE_DIRS_ONLY)
-echo "Removing test/ from blacklist (DELETE_DIRS_ONLY: only dirs/subdirs should be removed)"
-remove_from_blacklist test 0
-echo ""
-print_blacklist
-echo ""
-
-# remove blacklisted directory (DELETE_ALL)
-echo "Removing test/ from blacklist (DELETE_ALL: test/ dir and all its content should be removed)"
-remove_from_blacklist test 1
-echo ""
-print_blacklist
-echo ""
-
-echo "Removing test.txt from blacklist"
-remove_from_blacklist test.txt 1
-echo ""
-print_blacklist
 echo ""
