@@ -27,7 +27,7 @@ testing:
 	@chmod +x prepare_testing.sh
 	@./prepare_testing.sh
 
-	@gcc -Wall -Wextra testing-multithread.c -o testing-multithread
+	@gcc -Wall -Wextra -pthread testing-multithread.c -o testing-multithread
 
 	@echo ""
 	@echo ""
