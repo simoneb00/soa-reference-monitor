@@ -15,9 +15,11 @@
       <ul>
         <li><a href="#installation">Installation</a></li>
         <li><a href="#main-features">Main Features</a></li>
+        <li><a href="#testing">Testing</a></li>
       </ul>
     </li>
     <li><a href="#usage">Usage</a></li>
+    <li><a href="#testing">Testing</a></li>
   </ol>
 </details>
 
@@ -83,10 +85,10 @@ The following commands are available to manage the reference monitor:
   switch_state state
   ```
   Change the reference monitor state. The parameter `state` can be one of the following:
-  * 0 (OFF),
-  * 1 (ON),
-  * 2 (REC-OFF)
-  * 3 (REC-ON)
+  * 0 (i.e., OFF),
+  * 1 (i.e., ON),
+  * 2 (i.e., REC-OFF)
+  * 3 (i.e., REC-ON)
     
   This command requires sudo privileges and, if the target state is REC-OFF/REC-ON, it also requires the reference monitor password.
 * ```sh
@@ -103,7 +105,31 @@ The following commands are available to manage the reference monitor:
   ```
   Remove a file/directory from the blacklist.\
   The parameter `mode` can be one of the following:
-  * 0 (DELETE_DIRS_ONLY): only the specified directory (and its eventual subdirectories) will be removed from the blacklist. This enables the possibility to create some files/subdirectories inside a blacklisted directory, without whitelisting its whole content.
-  * 1 (DELETE_ALL): the specified directory and all its content will be removed from the blacklist.
+  * 0 (i.e., DELETE_DIRS_ONLY): only the specified directory (and its eventual subdirectories) will be removed from the blacklist. This enables the possibility to create some files/subdirectories inside a blacklisted directory, without whitelisting its whole content.
+  * 1 (i.e., DELETE_ALL): the specified directory and all its content will be removed from the blacklist.
   
   `mode` is only evaluated in the case of directories, and ignored in the case of files (although it must still be specified).
+
+## Testing
+The testing environment setup (i.e., files and directories creation and their insertion into the blacklist) is performed through the following command:
+```sh
+make testing
+```
+Once the setup is complete, the following test case can be executed:
+```sh
+./testing-multithread
+```
+This file creates 30000 threads, which - individually - attempt to:
+* Write-open the blacklisted file and, if successful, write the string "test" to the file;
+* Create an hard link to the blacklisted file;
+* Rename the blacklisted file;
+* Unlink the blacklisted file;
+* Create a symbolic link to the blacklisted directory;
+* Create a subdirectory inside the blacklisted directory.
+
+The test case is successful if all these operations are blocked, and they are correctly recorded on the log file.\
+Moreover, this repository contains another testing file, ```testing.sh```, which simply checks that every illegal operation on blacklisted files/directories is unsuccessful, via a single thread execution. It can be executed, after the already exposed testing environment setup, by typing:
+```sh
+./testing.sh
+```
+
