@@ -523,18 +523,16 @@ asmlinkage long sys_print_blacklist(void) {
                                 entry->path, entry->filename, entry->inode_number);
         }
 
-        if (copy_to_user(files, files_buf, files_size)) {
-                pr_err("%s: Fault in copying blacklisted files to user\n", MODNAME);
-                spin_unlock(&reference_monitor.lock);
-                return -EFAULT;
-        }
-
         list_for_each_entry(dir_entry, &reference_monitor.blacklist_dir, list) {
                 dirs_ptr += snprintf(dirs_ptr, dirs_size - (dirs_ptr - dirs_buf),
                                 "path = %s\n", dir_entry->path);
         }
         spin_unlock(&reference_monitor.lock);
-
+        
+	if (copy_to_user(files, files_buf, files_size)) {
+                pr_err("%s: Fault in copying blacklisted files to user\n", MODNAME);
+                return -EFAULT;
+        }
 
         if (copy_to_user(dirs, dirs_buf, dirs_size)) {
                 pr_err("%s: Fault in copying blacklisted directories to user\n", MODNAME);
